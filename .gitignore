@@ -12,3 +12,9 @@ __pycache__
 singleheader/simdutf.cpp
 singleheader/simdutf.h
 singleheader/singleheader.zip
+
+# exclude project files
+**.sln
+**.vcxproj
+**.vcxproj.user
+**.vcxproj.filters
