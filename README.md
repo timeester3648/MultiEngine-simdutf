@@ -2,7 +2,7 @@
 [![MSYS2-CI](https://github.com/lemire/simdutf/actions/workflows/msys2.yml/badge.svg)](https://github.com/lemire/simdutf/actions/workflows/msys2.yml)
 [![MSYS2-CLANG-CI](https://github.com/lemire/simdutf/actions/workflows/msys2-clang.yml/badge.svg)](https://github.com/lemire/simdutf/actions/workflows/msys2-clang.yml)
 [![Ubuntu 20.04 CI (GCC 9)](https://github.com/lemire/simdutf/actions/workflows/ubuntu20sani.yml/badge.svg)](https://github.com/lemire/simdutf/actions/workflows/ubuntu20sani.yml)
-
+[![Fuzzing Status](https://oss-fuzz-build-logs.storage.googleapis.com/badges/simdutf.svg)](https://bugs.chromium.org/p/oss-fuzz/issues/list?sort=-opened&can=1&q=proj:simdutf)
 
 # Table of contents
 
@@ -17,13 +17,14 @@
   - [Example](#example)
   - [API](#api)
   - [The sutf command-line tool](#the-sutf-command-line-tool)
+  - [Manual implementation selection](#manual-implementation-selection)
   - [References](#references)
   - [License](#license)
 
 simdutf: Unicode validation and transcoding at billions of characters per second
 ===============================================
 
-Most modern software relies on the [Unicode standard](https://en.wikipedia.org/wiki/Unicode). 
+Most modern software relies on the [Unicode standard](https://en.wikipedia.org/wiki/Unicode).
 In memory, Unicode strings are represented using either
 UTF-8 or UTF-16. The UTF-8 format is the de facto standard on the web (JSON, HTML, etc.) and it has been adopted as the default in many popular
 programming languages (Go, Rust, Swift, etc.). The UTF-16 format is standard in Java, C# and in many Windows technologies.
@@ -65,7 +66,7 @@ To illustrate, we present a benchmark result with values are in billions of char
 
 <img src="doc/utf16utf8.png" width="70%" />
 
-If your system supports AVX-512, the simdutf library can provide very high perforamnce. We get the following speed results on an Ice Lake Intel processor (both AVX2 and AVX-512) are simdutf kernels:
+If your system supports AVX-512, the simdutf library can provide very high performance. We get the following speed results on an Ice Lake Intel processor (both AVX2 and AVX-512) are simdutf kernels:
 
 <img src="doc/avx512.png" width="70%" />
 
@@ -94,7 +95,7 @@ Requirements
 - C++11 compatible compiler. We support LLVM clang, GCC, Visual Studio. (Our optional benchmark tool requires C++17.)
 - For high speed, you should have a recent 64-bit system (e.g., ARM or x64).
 - If you rely on CMake, you should use a recent CMake (at least 3.15) ; otherwise you may use the [single header version](#single-header-version). The library is also available from Microsoft's vcpkg.
-- AVX-512 support require a processor with AVX512-VBMI2 (Ice Lake or better) and a recent compiler (GCC 8 or better, Visual Studio 2019 or better, LLVM clang 6 or better). You need a correspondingly recent assembler such as gas (2.30+) or nasm (2.14+): recent compilers usually come with recent assemblers. If you mix a recent compiler with an incompatible/old assembler (e.g., when using a recent compiler with an old Linux distribution), you may get errors at build time because the compiler produces instructions that the assembler does not recognize: you should update your assembler to match your compiler (e.g., upgrade binutils to version 2.30 or better under Linux) or use an older compiler matching the capabilities of your assembler. 
+- AVX-512 support require a processor with AVX512-VBMI2 (Ice Lake or better) and a recent compiler (GCC 8 or better, Visual Studio 2019 or better, LLVM clang 6 or better). You need a correspondingly recent assembler such as gas (2.30+) or nasm (2.14+): recent compilers usually come with recent assemblers. If you mix a recent compiler with an incompatible/old assembler (e.g., when using a recent compiler with an old Linux distribution), you may get errors at build time because the compiler produces instructions that the assembler does not recognize: you should update your assembler to match your compiler (e.g., upgrade binutils to version 2.30 or better under Linux) or use an older compiler matching the capabilities of your assembler.
 
 Usage (Usage)
 -------
@@ -130,6 +131,9 @@ cmake --build build
 
 Instructions are similar for Visual Studio users.
 
+To use the library as a CMake dependency in your project, please see `tests/installation_tests/from_fetch` for
+an example.
+
 Since ICU is so common and popular, we assume that you may have it already on your system. When
 it is not found, it is simply omitted from the benchmarks. Thus, to benchmark against ICU, make
 sure you have ICU installed on your machine and that cmake can find it. For macOS, you may
@@ -142,7 +146,7 @@ Single-header version
 You can create a single-header version of the library where
 all of the code is put into two files (`simdutf.h` and `simdutf.cpp`).
 We publish a zip archive containing these files, e.g., see
-https://github.com/simdutf/simdutf/releases/download/v3.2.2/singleheader.zip
+https://github.com/simdutf/simdutf/releases/download/v3.2.9/singleheader.zip
 
 You may generate it on your own using a Python script.
 
@@ -1124,6 +1128,58 @@ during compilation. The following is an example of transcoding two input files t
 sutf -f UTF-8 -t UTF-16LE -o output_file.txt first_input_file.txt second_input_file.txt
 ```
 
+Manual implementation selection
+-------------------------------
+
+When compiling the llibrary for x64 processors, we build several implementations of each functions. At runtime, the best
+implementation is picked automatically. Advanced users may want to pick a particular implementation, thus bypassing our
+runtime detection. It is possible and even relatively convenient to do so. The following C++ program checks all the available
+implementation, and selects one as the default:
+
+```C++
+#include "simdutf.h"
+#include <cstdlib>
+#include <iostream>
+#include <string>
+
+int main() {
+  // This is just a demonstration, not actual testing required.
+  std::string source = "La vie est belle.";
+  std::string chosen_implementation;
+  for (auto &implementation : simdutf::get_available_implementations()) {
+    if (!implementation->supported_by_runtime_system()) {
+      continue;
+    }
+    bool validutf8 = implementation->validate_utf8(source.c_str(), source.size());
+    if (!validutf8) {
+      return EXIT_FAILURE;
+    }
+    std::cout << implementation->name() << ": " << implementation->description()
+              << std::endl;
+    chosen_implementation = implementation->name();
+  }
+  auto my_implementation =
+      simdutf::get_available_implementations()[chosen_implementation];
+  if (!my_implementation) {
+    return EXIT_FAILURE;
+  }
+  if (!my_implementation->supported_by_runtime_system()) {
+    return EXIT_FAILURE;
+  }
+  simdutf::get_active_implementation() = my_implementation;
+  bool validutf8 = simdutf::validate_utf8(source.c_str(), source.size());
+  if (!validutf8) {
+    return EXIT_FAILURE;
+  }
+  if (simdutf::get_active_implementation()->name() != chosen_implementation) {
+    return EXIT_FAILURE;
+  }
+  std::cout << "I have manually selected: " << simdutf::get_active_implementation()->name() << std::endl;
+  return EXIT_SUCCESS;
+}
+```
+
+Within the simdutf library,
 
 References
 -----------

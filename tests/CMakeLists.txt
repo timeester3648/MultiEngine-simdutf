@@ -9,6 +9,17 @@ add_subdirectory(reference)
 include(${PROJECT_SOURCE_DIR}/cmake/add_cpp_test.cmake)
 link_libraries(simdutf)
 
+add_cpp_test(random_fuzzer)
+target_link_libraries(random_fuzzer
+  PUBLIC simdutf::tests::helpers
+         simdutf::tests::reference)
+
+add_cpp_test(special_tests)
+target_link_libraries(special_tests
+  PUBLIC simdutf
+         simdutf::tests::reference
+         simdutf::tests::helpers)
+
 add_cpp_test(validate_ascii_basic_tests)
 target_link_libraries(validate_ascii_basic_tests
   PUBLIC simdutf::tests::helpers
@@ -28,6 +39,12 @@ add_cpp_test(validate_utf8_basic_tests)
 target_link_libraries(validate_utf8_basic_tests
   PUBLIC simdutf::tests::helpers
          simdutf::tests::reference)
+
+
+add_cpp_test(select_implementation)
+target_link_libraries(select_implementation
+  PUBLIC simdutf::tests::helpers
+        simdutf::tests::reference)
 
 add_cpp_test(validate_utf8_brute_force_tests)
 target_link_libraries(validate_utf8_brute_force_tests
