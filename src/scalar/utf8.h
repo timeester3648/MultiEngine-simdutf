@@ -13,9 +13,9 @@ inline simdutf_warn_unused bool validate(const char *buf, size_t len) noexcept {
   uint64_t pos = 0;
   uint32_t code_point = 0;
   while (pos < len) {
-    // check of the next 8 bytes are ascii.
+    // check of the next 16 bytes are ascii.
     uint64_t next_pos = pos + 16;
-    if (next_pos <= len) { // if it is safe to read 8 more bytes, check that they are ascii
+    if (next_pos <= len) { // if it is safe to read 16 more bytes, check that they are ascii
       uint64_t v1;
       std::memcpy(&v1, data + pos, sizeof(uint64_t));
       uint64_t v2;
@@ -79,9 +79,9 @@ inline simdutf_warn_unused result validate_with_errors(const char *buf, size_t l
   size_t pos = 0;
   uint32_t code_point = 0;
   while (pos < len) {
-    // check of the next 8 bytes are ascii.
+    // check of the next 16 bytes are ascii.
     size_t next_pos = pos + 16;
-    if (next_pos <= len) { // if it is safe to read 8 more bytes, check that they are ascii
+    if (next_pos <= len) { // if it is safe to read 16 more bytes, check that they are ascii
       uint64_t v1;
       std::memcpy(&v1, data + pos, sizeof(uint64_t));
       uint64_t v2;
@@ -139,9 +139,15 @@ inline simdutf_warn_unused result validate_with_errors(const char *buf, size_t l
   return result(error_code::SUCCESS, len);
 }
 
-// Finds the previous leading byte and validates with errors from there
+// Finds the previous leading byte starting backward from buf and validates with errors from there
 // Used to pinpoint the location of an error when an invalid chunk is detected
-inline simdutf_warn_unused result rewind_and_validate_with_errors(const char *buf, size_t len) noexcept {
+// We assume that the stream starts with a leading byte, and to check that it is the case, we
+// ask that you pass a pointer to the start of the stream (start).
+inline simdutf_warn_unused result rewind_and_validate_with_errors(const char *start, const char *buf, size_t len) noexcept {
+    // First check that we start with a leading byte
+  if ((*start & 0b11000000) == 0b10000000) {
+    return result(error_code::TOO_LONG, 0);
+  }
   size_t extra_len{0};
   // A leading byte cannot be further than 4 bytes away
   for(int i = 0; i < 5; i++) {
@@ -177,6 +183,16 @@ inline size_t utf16_length_from_utf8(const char* buf, size_t len) {
         if(uint8_t(p[i]) >= 240) { counter++; }
     }
     return counter;
+}
+
+inline size_t latin1_length_from_utf8(const char *buf, size_t len) {
+  const uint8_t * c = reinterpret_cast<const uint8_t *>(buf);
+
+    size_t answer = len;
+    for(size_t i = 0; i < len; i++) {
+        if((c[i] & 0b11100000) == 0b11000000) { answer--; } // if we have a two-byte UTF8 character
+    }
+    return answer;
 }
 
 } // utf8 namespace
