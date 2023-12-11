@@ -8,7 +8,9 @@ arm_convert_latin1_to_utf8(const char *latin1_input, size_t len,
   uint8_t *utf8_output = reinterpret_cast<uint8_t *>(utf8_out);
   const char *end = latin1_input + len;
   const uint16x8_t v_c080 = vmovq_n_u16((uint16_t)0xc080);
-  while (latin1_input + 16 <= end) {
+  // We always write 16 bytes, of which more than the first 8 bytes
+  // are valid. A safety margin of 8 is more than sufficient.
+  while (latin1_input + 16 + 8 <= end) {
     uint8x16_t in8 = vld1q_u8(reinterpret_cast<const uint8_t *>(latin1_input));
     if (vmaxvq_u8(in8) <= 0x7F) { // ASCII fast path!!!!
       vst1q_u8(utf8_output, in8);
@@ -43,7 +45,7 @@ arm_convert_latin1_to_utf8(const char *latin1_input, size_t len,
         vreinterpretq_u8_u16(vbslq_u16(one_byte_bytemask, in16, t4));
     // 3. prepare bitmask for 8-bit lookup
 #ifdef SIMDUTF_REGULAR_VISUAL_STUDIO
-    const uint16x8_t mask = make_uint16x8_t(0x0001, 0x0004, 0x0010, 0x0040,
+    const uint16x8_t mask = simdutf_make_uint16x8_t(0x0001, 0x0004, 0x0010, 0x0040,
                                             0x0002, 0x0008, 0x0020, 0x0080);
 #else
     const uint16x8_t mask = {0x0001, 0x0004, 0x0010, 0x0040,

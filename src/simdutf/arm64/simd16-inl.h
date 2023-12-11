@@ -163,7 +163,7 @@ struct simd16<uint16_t>: base16_numeric<uint16_t>  {
 
   // Change the endianness
   simdutf_really_inline simd16<uint16_t> swap_bytes() const {
-    return vreinterpretq_u16_u8(vrev16q_u8((*this)));
+    return vreinterpretq_u16_u8(vrev16q_u8(vreinterpretq_u8_u16(*this)));
   }
 };
 simdutf_really_inline simd16<int16_t>::operator simd16<uint16_t>() const { return this->value; }
@@ -206,7 +206,7 @@ simdutf_really_inline simd16<int16_t>::operator simd16<uint16_t>() const { retur
 
     simdutf_really_inline uint64_t to_bitmask() const {
 #ifdef SIMDUTF_REGULAR_VISUAL_STUDIO
-      const uint8x16_t bit_mask = make_uint8x16_t(
+      const uint8x16_t bit_mask = simdutf_make_uint8x16_t(
         0x01, 0x02, 0x4, 0x8, 0x10, 0x20, 0x40, 0x80,
         0x01, 0x02, 0x4, 0x8, 0x10, 0x20, 0x40, 0x80
       );

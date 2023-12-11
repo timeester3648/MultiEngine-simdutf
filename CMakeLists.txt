@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.15)
 project(simdutf
   DESCRIPTION "Fast Unicode validation, transcoding and processing"
   LANGUAGES CXX
-  VERSION 3.2.7
+  VERSION 4.0.8
 )
 
 include (TestBigEndian)
@@ -23,10 +23,10 @@ include(GNUInstallDirs)
 include(CTest)
 include(cmake/simdutf-flags.cmake)
 
-set(SIMDUTF_LIB_VERSION "3.2.15" CACHE STRING "simdutf library version")
-set(SIMDUTF_LIB_SOVERSION "4" CACHE STRING "simdutf library soversion")
+set(SIMDUTF_LIB_VERSION "5.0.0" CACHE STRING "simdutf library version")
+set(SIMDUTF_LIB_SOVERSION "5" CACHE STRING "simdutf library soversion")
 option(SIMDUTF_TESTS "Whether the tests are included as part of the CMake Build." ON)
-option(SIMDUTF_BENCHMARKS "Whether the benchmarks are included as part of the CMake Build." ON)
+option(SIMDUTF_BENCHMARKS "Whether the benchmarks are included as part of the CMake Build." OFF)
 option(SIMDUTF_TOOLS "Whether the tools are included as part of the CMake build." ON)
 option(SIMDUTF_ICONV "Whether to use iconv as part of the CMake build if available." ON)
 
@@ -129,6 +129,17 @@ install(
     COMPONENT example_Development
 )
 
+
+# pkg-config
+include(cmake/JoinPaths.cmake)
+join_paths(PKGCONFIG_INCLUDEDIR "\${prefix}" "${CMAKE_INSTALL_INCLUDEDIR}")
+join_paths(PKGCONFIG_LIBDIR "\${prefix}" "${CMAKE_INSTALL_LIBDIR}")
+
+configure_file("simdutf.pc.in" "simdutf.pc" @ONLY)
+install(
+    FILES "${CMAKE_CURRENT_BINARY_DIR}/simdutf.pc"
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig"
+)
 #
 # CPack
 #

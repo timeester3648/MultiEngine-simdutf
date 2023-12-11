@@ -68,7 +68,7 @@ The simdutf library is used by:
 - [Node.js](https://nodejs.org/en/) (19.4.0 or better, 20.0 or better, 18.15 or better), a standard JavaScript runtime environment,
 - [Bun](https://bun.sh), a fast JavaScript runtime environment,
 - [graaljs](https://github.com/oracle/graaljs), a JavaScript implementation by Oracle,
-- [Couchbase](https://www.couchbase.com),
+- [Couchbase](https://www.couchbase.com), a popular database system,
 - [haskell/text](https://github.com/haskell/text), a library for fast operations over Unicode text,
 - [klogg](https://github.com/variar/klogg), a Really fast log explorer,
 - [Pixie](https://github.com/pixie-io/pixie), observability tool for Kubernetes applications.
@@ -135,7 +135,7 @@ Linux or macOS users might follow the following instructions if they have a rece
 
 1. Pull the library in a directory
    ```
-   wget https://github.com/simdutf/simdutf/releases/download/v3.2.18/singleheader.zip
+   wget https://github.com/simdutf/simdutf/releases/download/v4.0.8/singleheader.zip
    unzip singleheader.zip
    ```
 2. Compile
@@ -192,7 +192,7 @@ Single-header version
 You can create a single-header version of the library where
 all of the code is put into two files (`simdutf.h` and `simdutf.cpp`).
 We publish a zip archive containing these files, e.g., see
-https://github.com/simdutf/simdutf/releases/download/v3.2.15/singleheader.zip
+https://github.com/simdutf/simdutf/releases/download/v4.0.8/singleheader.zip
 
 You may generate it on your own using a Python script.
 
@@ -215,7 +215,7 @@ Example
 
 Using the single-header version, you could compile the following program.
 
-```C++
+```cpp
 #include <iostream>
 #include <memory>
 
@@ -271,7 +271,7 @@ int main(int argc, char *argv[]) {
 API
 -----
 
-Our API is made of a few non-allocating function. They typically take a pointer and a length as a parameter,
+Our API is made of a few non-allocating functions. They typically take a pointer and a length as a parameter,
 and they sometimes take a pointer to an output buffer. Users are responsible for memory allocation.
 
 We use three types of data pointer types:
@@ -288,7 +288,7 @@ and types with `simdutf::` as required.
 We have basic functions to detect the type of an input. They return an integer defined by
 the following `enum`.
 
-```c++
+```cpp
 enum encoding_type {
         UTF8 = 1,       // BOM 0xef 0xbb 0xbf
         UTF16_LE = 2,   // BOM 0xff 0xfe
@@ -300,7 +300,7 @@ enum encoding_type {
 };
 ```
 
-```C++
+```cpp
 
 /**
  * Autodetect the encoding of the input, a single encoding is recommended.
@@ -331,16 +331,16 @@ simdutf_warn_unused int detect_encodings(const char * input, size_t length) noex
 
 
 For validation and transcoding, we also provide functions that will stop on error and return a result struct which is a pair of two fields:
-```c++
+```cpp
 struct result {
   error_code error; // see `struct error_code`.
   size_t count; // In case of error, indicates the position of the error in the input in code units.
   // In case of success, indicates the number of code units validated/written.
 };
 ```
-On error, the `error` field indicates the type of error encountered and the `count` field indicates indicates the position of the error in the input in code units or the number of characters validated/written.
+On error, the `error` field indicates the type of error encountered and the `count` field indicates the position of the error in the input in code units or the number of characters validated/written.
 We report six types of errors related to Latin1, UTF-8, UTF-16 and UTF-32 encodings:
-```c++
+```cpp
 enum error_code {
   SUCCESS = 0,
   HEADER_BITS,  // Any byte must have fewer than 5 header bits.
@@ -350,7 +350,7 @@ enum error_code {
   OVERLONG,     // The decoded character must be above U+7F for two-byte characters, U+7FF for three-byte characters,
                 // and U+FFFF for four-byte characters.
   TOO_LARGE,    // The decoded character must be less than or equal to U+10FFFF,less than or equal than U+7F for ASCII OR less than equal than U+FF for Latin1
-  SURROGATE,    // The decoded character must be not be in U+D800...DFFF (UTF-8 or UTF-32) OR
+  SURROGATE,    // The decoded character must not be in U+D800...DFFF (UTF-8 or UTF-32) OR
                 // a high surrogate must be followed by a low surrogate and a low surrogate must be preceded by a high surrogate (UTF-16) OR
                 // there must be no surrogate at all (Latin1)
   OTHER         // Not related to validation/transcoding.
@@ -368,9 +368,9 @@ be correct.
 
 You may use functions that report an error to indicate where the problem happens during, as follows:
 
-```c++
+```cpp
   std::string bad_ascii = "\x20\x20\x20\x20\x20\xff\x20\x20\x20";
-  simdutf::result res = implementation.validate_ascii_with_errors(bad_utf8.data(), bad_utf8.size());
+  simdutf::result res = implementation.validate_ascii_with_errors(bad_ascii.data(), bad_ascii.size());
   if(res.error != simdutf::error_code::SUCCESS) {
     std::cerr << "error at index " << res.count << std::endl;
   }
@@ -378,7 +378,7 @@ You may use functions that report an error to indicate where the problem happens
 
 Or as follows:
 
-```c++
+```cpp
   std::string bad_utf8 = "\xc3\xa9\xc3\xa9\x20\xff\xc3\xa9";
   simdutf::result res = implementation.validate_utf8_with_errors(bad_utf8.data(), bad_utf8.size());
   if(res.error != simdutf::error_code::SUCCESS) {
@@ -394,7 +394,7 @@ Or as follows:
 
 We have fast validation functions.
 
-```c++
+```cpp
 /**
  * Validate the ASCII string.
  *
@@ -561,7 +561,7 @@ Given a valid UTF-8 or UTF-16 input, you may count the number Unicode characters
 fast functions. For UTF-32, there is no need for a function given that each character
 requires a flat 4 bytes. Likewise for Latin1: one byte will always equal one character.
 
-```c++
+```cpp
 /**
  * Count the number of code points (characters) in the string assuming that
  * it is valid.
@@ -624,7 +624,7 @@ are fast and non-validating.
 
 
 
-```c++
+```cpp
 
 /**
  * Return the number of bytes that this Latin1 string would require in UTF-8 format.
@@ -812,7 +812,7 @@ scenario where you expect the input to be valid most of the time.
 
 
 
-```c++
+```cpp
 /**
  * Convert Latin1 string into UTF8 string.
  *
@@ -1134,13 +1134,130 @@ simdutf_warn_unused size_t convert_utf16le_to_utf32(const char16_t * input, size
 simdutf_warn_unused size_t convert_utf16be_to_utf32(const char16_t * input, size_t length, char32_t* utf32_buffer) noexcept;
 ```
 
+In some cases, you need to transcode UTF-8 or UTF-16 inputs, but you may have a truncated
+string, meaning that the last character might be incomplete. In such cases, we recommend
+trimming the end of your input so you do not encounter an error.
+
+```cpp
+
+/**
+ * Given a valid UTF-8 string having a possibly truncated last character,
+ * this function checks the end of string. If the last character is truncated (or partial),
+ * then it returns a shorter length (shorter by 1 to 3 bytes) so that the short UTF-8
+ * strings only contain complete characters. If there is no truncated character,
+ * the original length is returned.
+ *
+ * This function assumes that the input string is valid UTF-8, but possibly truncated.
+ *
+ * @param input         the UTF-8 string to process
+ * @param length        the length of the string in bytes
+ * @return the length of the string in bytes, possibly shorter by 1 to 3 bytes
+ */
+simdutf_warn_unused size_t trim_partial_utf8(const char *input, size_t length);
+
+/**
+ * Given a valid UTF-16BE string having a possibly truncated last character,
+ * this function checks the end of string. If the last character is truncated (or partial),
+ * then it returns a shorter length (shorter by 1 unit) so that the short UTF-16BE
+ * strings only contain complete characters. If there is no truncated character,
+ * the original length is returned.
+ *
+ * This function assumes that the input string is valid UTF-16BE, but possibly truncated.
+ *
+ * @param input         the UTF-16BE string to process
+ * @param length        the length of the string in bytes
+ * @return the length of the string in bytes, possibly shorter by 1 unit
+ */
+simdutf_warn_unused size_t trim_partial_utf16be(const char16_t* input, size_t length);
+
+/**
+ * Given a valid UTF-16LE string having a possibly truncated last character,
+ * this function checks the end of string. If the last character is truncated (or partial),
+ * then it returns a shorter length (shorter by 1 unit) so that the short UTF-16LE
+ * strings only contain complete characters. If there is no truncated character,
+ * the original length is returned.
+ *
+ * This function assumes that the input string is valid UTF-16LE, but possibly truncated.
+ *
+ * @param input         the UTF-16LE string to process
+ * @param length        the length of the string in bytes
+ * @return the length of the string in unit, possibly shorter by 1 unit
+ */
+simdutf_warn_unused size_t trim_partial_utf16le(const char16_t* input, size_t length);
+
+
+/**
+ * Given a valid UTF-16 string having a possibly truncated last character,
+ * this function checks the end of string. If the last character is truncated (or partial),
+ * then it returns a shorter length (shorter by 1 unit) so that the short UTF-16
+ * strings only contain complete characters. If there is no truncated character,
+ * the original length is returned.
+ *
+ * This function assumes that the input string is valid UTF-16, but possibly truncated.
+ * We use the native endianness.
+ *
+ * @param input         the UTF-16 string to process
+ * @param length        the length of the string in bytes
+ * @return the length of the string in unit, possibly shorter by 1 unit
+ */
+simdutf_warn_unused size_t trim_partial_utf16(const char16_t* input, size_t length);
+```
+
+You may use these `trim_` functions to decode inputs piece by piece, as in the following
+examples. First a case where you want to decode a UTF-8 strings in two steps:
+
+```cpp
+  const char unicode[] = "\xc3\xa9\x63ole d'\xc3\xa9t\xc3\xa9";
+  // suppose you want to decode only the start of this string.
+  size_t length = 10;
+  // Picking 10 bytes is problematic because we might end up in the middle of a
+  // code point. But we can rewind to the previous code point.
+  length = simdutf::trim_partial_utf8(unicode, length);
+  // Now we can transcode safely
+  size_t budget_utf16 = simdutf::utf16_length_from_utf8(unicode, length);
+  std::unique_ptr<char16_t[]> utf16{new char16_t[budget_utf16]};
+  size_t utf16words =
+      simdutf::convert_utf8_to_utf16le(unicode, length, utf16.get());
+  // We can then transcode the next batch
+  const char * next = unicode + length;
+  size_t next_length = sizeof(unicode) - length;
+  size_t next_budget_utf16 = simdutf::utf16_length_from_utf8(next, next_length);
+  std::unique_ptr<char16_t[]> next_utf16{new char16_t[next_budget_utf16]};
+  size_t next_utf16words =
+      simdutf::convert_utf8_to_utf16le(next, next_length, next_utf16.get());
+```
+
+You can use the same approach with UTF-16:
+
+```cpp  // We have three sequences of surrogate pairs (UTF-16).
+  const char16_t unicode[] = u"\x3cd8\x10df\x3cd8\x10df\x3cd8\x10df";
+  // suppose you want to decode only the start of this string.
+  size_t length = 3;
+  // Picking 3 units is problematic because we might end up in the middle of a
+  // surrogate pair. But we can rewind to the previous code point.
+  length = simdutf::trim_partial_utf16(unicode, length);
+  // Now we can transcode safely
+  size_t budget_utf8 = simdutf::utf8_length_from_utf16(unicode, length);
+  std::unique_ptr<char[]> utf8{new char[budget_utf8]};
+  size_t utf8words =
+      simdutf::convert_utf16_to_utf8(unicode, length, utf8.get());
+  // We can then transcode the next batch
+  const char16_t * next = unicode + length;
+  size_t next_length = 6 - length;
+  size_t next_budget_utf8 = simdutf::utf8_length_from_utf16(next, next_length);
+  std::unique_ptr<char[]> next_utf8{new char[next_budget_utf8]};
+  size_t next_utf8words =
+      simdutf::convert_utf16_to_utf8(next, next_length, next_utf8.get());
+```
+
+
 We have more advanced conversion functions which output a `simdutf::result` structure with
 an indication of the error type and a `count` entry (e.g., `convert_utf8_to_utf16le_with_errors`).
 They are well suited when you expect that there might be errors in the input that require
 further investigation. The `count` field contains the location of the error in the input in code units,
 if there is an error, or otherwise the number of code units written. You may use these functions as follows:
 
-```c++
+```cpp
   // this UTF-8 string has a bad byte at index 5
   std::string bad_utf8 = "\xc3\xa9\xc3\xa9\x20\xff\xc3\xa9";
   size_t budget_utf16 = simdutf::utf16_length_from_utf8(bad_utf8.data(), bad_utf8.size());
@@ -1158,9 +1275,9 @@ if there is an error, or otherwise the number of code units written. You may use
 
 We have several transcoding functions returning `simdutf::error` results:
 
-```c++
+```cpp
 /**
- * Convert possibly broken UTF-8 string into latin1 string. with errors
+ * Convert possibly broken UTF-8 string into latin1 string with errors
  *
  * During the conversion also validation of the input string is done.
  * This function is suitable to work with inputs from untrusted sources.
@@ -1427,7 +1544,7 @@ simdutf_warn_unused result convert_utf16be_to_utf32_with_errors(const char16_t *
 
 If you have a UTF-16 input, you may change its endianess with a fast function.
 
-```c++
+```cpp
 /**
  * Change the endianness of the input. Can be used to go from UTF-16LE to UTF-16BE or
  * from UTF-16BE to UTF-16LE.
@@ -1467,7 +1584,7 @@ implementation is picked automatically. Advanced users may want to pick a partic
 runtime detection. It is possible and even relatively convenient to do so. The following C++ program checks all the available
 implementation, and selects one as the default:
 
-```C++
+```cpp
 #include "simdutf.h"
 #include <cstdlib>
 #include <iostream>

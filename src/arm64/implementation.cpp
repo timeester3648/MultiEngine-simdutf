@@ -35,7 +35,7 @@ simdutf_really_inline uint16x4_t convert_utf8_3_byte_to_utf16(uint8x16_t in) {
   // Low half contains  10cccccc|1110aaaa
   // High half contains 10bbbbbb|10bbbbbb
 #ifdef SIMDUTF_REGULAR_VISUAL_STUDIO
-  const uint8x16_t sh = make_uint8x16_t(0, 2, 3, 5, 6, 8, 9, 11, 1, 1, 4, 4, 7, 7, 10, 10);
+  const uint8x16_t sh = simdutf_make_uint8x16_t(0, 2, 3, 5, 6, 8, 9, 11, 1, 1, 4, 4, 7, 7, 10, 10);
 #else
   const uint8x16_t sh = {0, 2, 3, 5, 6, 8, 9, 11, 1, 1, 4, 4, 7, 7, 10, 10};
 #endif
@@ -145,8 +145,6 @@ simdutf_really_inline uint16x8_t convert_utf8_1_to_2_byte_to_utf16(uint8x16_t in
 
 // placeholder scalars
 #include "scalar/latin1.h"
-//#include "scalar/utf8_to_latin1/valid_utf8_to_latin1.h"
-//#include "scalar/utf8_to_latin1/utf8_to_latin1.h"
 
 //
 // Implementation-specific overrides
@@ -251,7 +249,6 @@ simdutf_warn_unused size_t implementation::convert_latin1_to_utf8(const char * b
       ret.first, len - (ret.first - buf), ret.second);
     converted_chars += scalar_converted_chars;
   }
-
   return converted_chars;
 }
 
@@ -613,8 +610,16 @@ simdutf_warn_unused result implementation::convert_utf32_to_latin1_with_errors(c
 }
 
 simdutf_warn_unused size_t implementation::convert_valid_utf32_to_latin1(const char32_t* buf, size_t len, char* latin1_output) const noexcept {
-  // optimization opportunity: implement a custom function.
-  return convert_utf32_to_latin1(buf,len,latin1_output);
+  std::pair<const char32_t*, char*> ret = arm_convert_utf32_to_latin1(buf, len, latin1_output);
+  if (ret.first == nullptr) { return 0; }
+  size_t saved_bytes = ret.second - latin1_output;
+
+  if (ret.first != buf + len) {
+    const size_t scalar_saved_bytes = scalar::utf32_to_latin1::convert_valid(
+                                        ret.first, len - (ret.first - buf), ret.second);
+    saved_bytes += scalar_saved_bytes;
+  }
+  return saved_bytes;
 }
 
 simdutf_warn_unused size_t implementation::convert_valid_utf32_to_utf8(const char32_t* buf, size_t len, char* utf8_output) const noexcept {
@@ -743,11 +748,7 @@ simdutf_warn_unused size_t implementation::utf8_length_from_latin1(const char * 
     // vertical addition
     result -= vaddvq_s8(vreinterpretq_s8_u8(withhighbit));
   }
-  // scalar tail
-  for (uint8_t j = 0; j < rem; j++) {
-    result += (simd_end[j] >> 7);
-  }
-  return result + length;
+  return result + (length / lanes) * lanes + scalar::latin1::utf8_length_from_latin1((const char*)simd_end, rem);
 }
 
 simdutf_warn_unused size_t implementation::utf8_length_from_utf16le(const char16_t * input, size_t length) const noexcept {
@@ -829,7 +830,7 @@ simdutf_warn_unused size_t implementation::utf16_length_from_utf32(const char32_
 }
 
 simdutf_warn_unused size_t implementation::utf32_length_from_utf8(const char * input, size_t length) const noexcept {
-  return utf8::utf32_length_from_utf8(input, length);
+  return utf8::count_code_points(input, length);
 }
 
 } // namespace SIMDUTF_IMPLEMENTATION

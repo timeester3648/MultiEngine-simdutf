@@ -185,14 +185,24 @@ inline size_t utf16_length_from_utf8(const char* buf, size_t len) {
     return counter;
 }
 
-inline size_t latin1_length_from_utf8(const char *buf, size_t len) {
-  const uint8_t * c = reinterpret_cast<const uint8_t *>(buf);
-
-    size_t answer = len;
-    for(size_t i = 0; i < len; i++) {
-        if((c[i] & 0b11100000) == 0b11000000) { answer--; } // if we have a two-byte UTF8 character
+simdutf_warn_unused inline size_t trim_partial_utf8(const char *input, size_t length) {
+  if (length < 3) {
+    switch (length) {
+      case 2:
+        if (uint8_t(input[length-1]) >= 0xc0) { return length-1; } // 2-, 3- and 4-byte characters with only 1 byte left
+        if (uint8_t(input[length-2]) >= 0xe0) { return length-2; } // 3- and 4-byte characters with only 2 bytes left
+        return length;
+      case 1:
+        if (uint8_t(input[length-1]) >= 0xc0) { return length-1; } // 2-, 3- and 4-byte characters with only 1 byte left
+        return length;
+      case 0:
+        return length;
     }
-    return answer;
+  }
+  if (uint8_t(input[length-1]) >= 0xc0) { return length-1; } // 2-, 3- and 4-byte characters with only 1 byte left
+  if (uint8_t(input[length-2]) >= 0xe0) { return length-2; } // 3- and 4-byte characters with only 1 byte left
+  if (uint8_t(input[length-3]) >= 0xf0) { return length-3; } // 4-byte characters with only 3 bytes left
+  return length;
 }
 
 } // utf8 namespace
