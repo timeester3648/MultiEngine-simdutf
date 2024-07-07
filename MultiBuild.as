@@ -2,9 +2,9 @@ void main(MultiBuild::Workspace& workspace) {
 	auto project = workspace.create_project(".");
 	auto properties = project.properties();
 
-	properties.name("simdutf");
+	project.name("simdutf");
 	properties.binary_object_kind(MultiBuild::BinaryObjectKind::eStaticLib);
-	properties.license("./LICENSE-MIT");
+	project.license("./LICENSE-MIT");
 
 	// TODO: remove when compilation errors fixed
 	properties.cpp_dialect(MultiBuild::LangDialectCpp::e14);
