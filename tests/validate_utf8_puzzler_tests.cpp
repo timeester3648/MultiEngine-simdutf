@@ -1,9 +1,5 @@
 #include "simdutf.h"
-#include <cstddef>
-#include <cstdint>
-#include <random>
-#include <iostream>
-#include <iomanip>
+
 #include <tests/helpers/test.h>
 
 // This is an attempt at reproducing an issue with the utf8 fuzzer
@@ -19,10 +15,8 @@ TEST(puzzler2) {
   size_t length = 102;
   ASSERT_FALSE(implementation.validate_utf8(bad102, length));
   auto r = implementation.validate_utf8_with_errors(bad102, length);
-  ASSERT_TRUE(r.error == simdutf::TOO_SHORT);
-  ASSERT_TRUE(r.count == 62);
+  ASSERT_EQUAL(r.error, simdutf::TOO_SHORT);
+  ASSERT_EQUAL(r.count, 62);
 }
 
-int main(int argc, char* argv[]) {
-  return simdutf::test::main(argc, argv);
-}
+TEST_MAIN

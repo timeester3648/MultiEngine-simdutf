@@ -10,7 +10,7 @@
 
 #include "simdutf/portability.h"
 
-// Default Haswell to on if this is x86-64. Even if we're not compiled for it, it could be selected
+// Default Haswell to on if this is x86-64. Even if we are not compiled for it, it could be selected
 // at runtime.
 #ifndef SIMDUTF_IMPLEMENTATION_HASWELL
 //
@@ -26,7 +26,11 @@
 #endif
 // To see why  (__BMI__) && (__LZCNT__) are not part of this next line, see
 // https://github.com/simdutf/simdutf/issues/1247
-#define SIMDUTF_CAN_ALWAYS_RUN_HASWELL ((SIMDUTF_IMPLEMENTATION_HASWELL) && (SIMDUTF_IS_X86_64) && (__AVX2__))
+#if ((SIMDUTF_IMPLEMENTATION_HASWELL) && (SIMDUTF_IS_X86_64) && (__AVX2__))
+#define SIMDUTF_CAN_ALWAYS_RUN_HASWELL 1
+#else
+#define SIMDUTF_CAN_ALWAYS_RUN_HASWELL 0
+#endif
 
 #if SIMDUTF_IMPLEMENTATION_HASWELL
 

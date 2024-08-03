@@ -1,9 +1,8 @@
 #include "simdutf.h"
 
 #include <array>
-#include <iostream>
 #include <memory>
-#include <string>
+
 #include <tests/helpers/random_int.h>
 #include <tests/helpers/test.h>
 #include <tests/helpers/transcode_test_base.h>
@@ -16,12 +15,7 @@ using simdutf::tests::helpers::transcode_utf8_to_utf32_test_base;
 constexpr size_t trials = 10000;
 } // namespace
 
-TEST(convert_pure_ASCII) {
-  for (size_t trial = 0; trial < trials; trial++) {
-    if ((trial % 100) == 0) {
-      std::cout << ".";
-      std::cout.flush();
-    }
+TEST_LOOP(trials, convert_pure_ASCII) {
     size_t counter = 0;
     auto generator = [&counter]() -> uint32_t { return counter++ & 0x7f; };
 
@@ -39,16 +33,9 @@ TEST(convert_pure_ASCII) {
       ASSERT_TRUE(test(procedure));
       ASSERT_TRUE(test.check_size(size_procedure));
     }
-  }
 }
 
-TEST(convert_1_or_2_UTF8_bytes) {
-  for (size_t trial = 0; trial < trials; trial++) {
-    uint32_t seed{1234 + uint32_t(trial)};
-    if ((trial % 100) == 0) {
-      std::cout << ".";
-      std::cout.flush();
-    }
+TEST_LOOP(trials, convert_1_or_2_UTF8_bytes) {
     simdutf::tests::helpers::RandomInt random(
         0x0000, 0x07ff, seed); // range for 1 or 2 UTF-8 bytes
 
@@ -65,16 +52,9 @@ TEST(convert_1_or_2_UTF8_bytes) {
       ASSERT_TRUE(test(procedure));
       ASSERT_TRUE(test.check_size(size_procedure));
     }
-  }
 }
 
-TEST(convert_1_or_2_or_3_UTF8_bytes) {
-  for (size_t trial = 0; trial < trials; trial++) {
-    uint32_t seed{1234 + uint32_t(trial)};
-    if ((trial % 100) == 0) {
-      std::cout << ".";
-      std::cout.flush();
-    }
+TEST_LOOP(trials, convert_1_or_2_or_3_UTF8_bytes) {
     // range for 1, 2 or 3 UTF-8 bytes
     simdutf::tests::helpers::RandomIntRanges random(
         {{0x0000, 0xd7ff}, {0xe000, 0xffff}}, seed);
@@ -92,16 +72,9 @@ TEST(convert_1_or_2_or_3_UTF8_bytes) {
       ASSERT_TRUE(test(procedure));
       ASSERT_TRUE(test.check_size(size_procedure));
     }
-  }
 }
 
-TEST(convert_3_or_4_UTF8_bytes) {
-  for (size_t trial = 0; trial < trials; trial++) {
-    uint32_t seed{1234 + uint32_t(trial)};
-    if ((trial % 100) == 0) {
-      std::cout << ".";
-      std::cout.flush();
-    }
+TEST_LOOP(trials, convert_3_or_4_UTF8_bytes) {
     simdutf::tests::helpers::RandomIntRanges random(
         {{0x0800, 0xd800 - 1}, {0xe000, 0x10ffff}},
         seed); // range for 3 or 4 UTF-8 bytes
@@ -119,16 +92,9 @@ TEST(convert_3_or_4_UTF8_bytes) {
       ASSERT_TRUE(test(procedure));
       ASSERT_TRUE(test.check_size(size_procedure));
     }
-  }
 }
 
-TEST(convert_null_4_UTF8_bytes) {
-  for (size_t trial = 0; trial < trials; trial++) {
-    uint32_t seed{1234 + uint32_t(trial)};
-    if ((trial % 100) == 0) {
-      std::cout << ".";
-      std::cout.flush();
-    }
+TEST_LOOP(trials, convert_null_4_UTF8_bytes) {
     simdutf::tests::helpers::RandomIntRanges random(
         {{0x0000, 0x00000}, {0x10000, 0x10ffff}},
         seed); // range for 3 or 4 UTF-8 bytes
@@ -142,7 +108,6 @@ TEST(convert_null_4_UTF8_bytes) {
       transcode_utf8_to_utf32_test_base test(random, size);
       ASSERT_TRUE(test(procedure));
     }
-  }
 }
 
 TEST(convert_invalid_special_cases) {
@@ -207,13 +172,11 @@ TEST(convert_invalid_special_cases) {
       1024);
 
   // invalid input!!!
-  size_t expected_utf32words =
-      implementation.utf32_length_from_utf8(source.data(), source.size());
-  std::cout << "expected output " << expected_utf32words << std::endl;
+  size_t expected_utf32words = implementation.utf32_length_from_utf8(source.data(), source.size());
   std::unique_ptr<char32_t[]> utf32_output{new char32_t[expected_utf32words]};
   size_t utf32words = implementation.convert_utf8_to_utf32(
       source.c_str(), source.size(), utf32_output.get());
-  ASSERT_TRUE(utf32words == 0);
+  ASSERT_EQUAL(utf32words, 0);
 }
 
-int main(int argc, char *argv[]) { return simdutf::test::main(argc, argv); }
+TEST_MAIN

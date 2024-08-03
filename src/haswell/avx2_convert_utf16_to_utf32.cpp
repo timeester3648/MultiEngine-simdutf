@@ -6,14 +6,14 @@
     1. an input register contains no surrogates and each value
        is in range 0x0000 .. 0x07ff.
     2. an input register contains no surrogates and values are
-       is in range 0x0000 .. 0xffff.
+       in range 0x0000 .. 0xffff.
     3. an input register contains surrogates --- i.e. codepoints
        can have 16 or 32 bits.
 
     Ad 1.
 
     When values are less than 0x0800, it means that a 16-bit code unit
-    can be converted into: 1) single UTF8 byte (when it's an ASCII
+    can be converted into: 1) single UTF8 byte (when it is an ASCII
     char) or 2) two UTF8 bytes.
 
     For this case we do only some shuffle to obtain these 2-byte

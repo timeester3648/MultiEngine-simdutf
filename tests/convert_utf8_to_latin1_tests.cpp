@@ -1,15 +1,11 @@
 #include "simdutf.h"
 
 #include <array>
-#include <iostream>
 
+#include <tests/reference/validate_utf8_to_latin1.h>
 #include <tests/helpers/transcode_test_base.h>
 #include <tests/helpers/random_int.h>
 #include <tests/helpers/test.h>
-#include <sstream>
-
-#include "reference/validate_utf8_to_latin1.h"
-
 
 namespace {
   std::array<size_t, 7> input_size{7, 16, 12, 64, 67, 128, 256};
@@ -19,12 +15,31 @@ namespace {
   constexpr size_t trials = 10000;
 }
 
+TEST(issue_convert_utf8_to_latin1_cbf29ce4842223c9) {
+   const unsigned char data[] = {0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
+                                 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
+                                 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
+                                 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
+                                 0x20, 0x20, 0x20, 0x20, 0xc2, 0xbd, 0xc2, 0x90, 0x20, 0x20, 0x20,
+                                 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0xc2};
+   constexpr std::size_t data_len_bytes = sizeof(data);
+   constexpr std::size_t data_len = data_len_bytes / sizeof(char);
+   std::vector<char> output(4 * data_len);
+   const auto r = implementation.convert_utf8_to_latin1((const char *) data,
+                                                        data_len,
+                                                        output.data());
+   /*
+   got return 61 from implementation icelake
+   got return 0 from implementation haswell
+   got return 0 from implementation westmere
+   got return 0 from implementation fallback
+   */
+   ASSERT_EQUAL(r, 0);
+}
+
 // For invalid UTF-8, we expect the conversion to fail (return 0)
-TEST(convert_random_inputs) {
-  for(size_t trial = 0; trial < trials; trial ++) {
-    uint32_t seed{1234+uint32_t(trial)};
+TEST_LOOP(trials, convert_random_inputs) {
     simdutf::tests::helpers::RandomInt r(0x00, 0xff, seed);
-    if((trial % 100) == 0) { std::cout << "."; std::cout.flush(); }
 
     for (size_t size: input_size) {
       std::vector<char> utf8(size);
@@ -40,12 +55,9 @@ TEST(convert_random_inputs) {
         ASSERT_EQUAL(actual_size,0);
       }
     }
-  }
 }
 
-TEST(convert_pure_ASCII) {
-  for(size_t trial = 0; trial < trials; trial ++) {
-    if((trial % 100) == 0) { std::cout << "."; std::cout.flush(); }
+TEST_LOOP(trials, convert_pure_ASCII) {
     size_t counter = 0;
     auto generator = [&counter]() -> uint8_t {
       return counter++ & 0x7f;
@@ -63,13 +75,9 @@ TEST(convert_pure_ASCII) {
       ASSERT_TRUE(test(procedure));
       ASSERT_TRUE(test.check_size(size_procedure));
     }
-  }
 } 
 
-TEST(convert_1_or_2_valid_UTF8_bytes_to_latin1) {
-  for(size_t trial = 0; trial < trials; trial ++) {
-    uint32_t seed{1234+uint32_t(trial)};
-    if((trial % 100) == 0) { std::cout << "."; std::cout.flush(); }
+TEST_LOOP(trials, convert_1_or_2_valid_UTF8_bytes_to_latin1) {
     simdutf::tests::helpers::RandomInt random(0x0000, 0x0ff, seed); // range for 1 or 2 UTF-8 bytes
 
     auto procedure = [&implementation](const char* utf8, size_t size, char* latin1) -> size_t {
@@ -83,9 +91,6 @@ TEST(convert_1_or_2_valid_UTF8_bytes_to_latin1) {
       ASSERT_TRUE(test(procedure));
       ASSERT_TRUE(test.check_size(size_procedure));
     }
-  }
 }
 
-int main(int argc, char* argv[]) {
-  return simdutf::test::main(argc, argv);
-}
+TEST_MAIN

@@ -52,10 +52,10 @@ template<>
 struct simd16<bool>: base16<bool> {
   static simdutf_really_inline simd16<bool> splat(bool _value) { return vmovq_n_u16(uint16_t(-(!!_value))); }
 
-  simdutf_really_inline simd16<bool>() : base16() {}
-  simdutf_really_inline simd16<bool>(const uint16x8_t _value) : base16<bool>(_value) {}
+  simdutf_really_inline simd16() : base16() {}
+  simdutf_really_inline simd16(const uint16x8_t _value) : base16<bool>(_value) {}
   // Splat constructor
-  simdutf_really_inline simd16<bool>(bool _value) : base16<bool>(splat(_value)) {}
+  simdutf_really_inline simd16(bool _value) : base16<bool>(splat(_value)) {}
 
 };
 
@@ -156,7 +156,7 @@ struct simd16<uint16_t>: base16_numeric<uint16_t>  {
   simdutf_really_inline simd16<uint16_t> operator&(const simd16<uint16_t> other) const { return vandq_u16(*this, other); }
   simdutf_really_inline simd16<uint16_t> operator^(const simd16<uint16_t> other) const { return veorq_u16(*this, other); }
 
-  // Pack with the unsigned saturation  two uint16_t code units into single uint8_t vector
+  // Pack with the unsigned saturation of two uint16_t code units into single uint8_t vector
   static simdutf_really_inline simd8<uint8_t> pack(const simd16<uint16_t>& v0, const simd16<uint16_t>& v1) {
     return vqmovn_high_u16(vqmovn_u16(v0), v1);
   }

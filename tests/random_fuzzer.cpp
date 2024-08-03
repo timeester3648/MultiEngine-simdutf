@@ -1,10 +1,10 @@
-#include <memory>
-#include <cstdint>
 #include <cstdlib>
+#include <memory>
 #include <fstream>
-#include <iostream>
 #include <random>
 #include <string>
+#include <type_traits>
+#include <iostream>
 
 #include "simdutf.h"
 
@@ -17,8 +17,8 @@ static void print_input(const std::string& s, const simdutf::implementation *con
     printf("%02x ", (unsigned char)c);
   }
   printf("\n");
-  std::cout << "string length : " << s.size() << " bytes" << std::endl;
-  std::cout << "implementation->name() = " << e->name() << std::endl;
+  printf("string length: %zu\n", s.size());
+  printf("implementation->name() = %s", e->name().c_str());
 }
 
 extern "C" {
@@ -29,7 +29,7 @@ void dump_case() {
   }
   printf("\n");
   std::string name = "random_fuzzer_log.txt";
-  std::cout << "Dumping to: " << name << std::endl;
+  printf("Dumping to: %s\n", name.c_str());
   std::fstream log;
   log.open(name, std::ios::app);
   const size_t buf_size = 4 * input.size() + 3;
@@ -44,12 +44,66 @@ void dump_case() {
   buffer[buf_size - 2] = '"';
   buffer[buf_size - 1] = '\0';
   log << buffer;
-  log << std::endl;
+  log << '\n';
   delete[] buffer;
   log.close();
 }
 
 void __asan_on_error() { dump_case(); }
+}
+
+template<typename T, bool bigendian = false>
+int validate_tests(const char *databytes, size_t size_in_bytes) {
+    const T *data = reinterpret_cast<const T *>(databytes);
+    const auto size = size_in_bytes / sizeof(T);
+
+    simdutf::result reference_result{};
+    const simdutf::implementation *reference_impl{};
+
+    for (auto &e : simdutf::get_available_implementations()) {
+        if (!e->supported_by_runtime_system()) {
+            continue;
+        }
+        const char * message = "unknown";
+        simdutf::result result{};
+        if (std::is_same<T, char>::value == true) {
+          message = "utf8";
+          result = e->validate_utf8_with_errors(reinterpret_cast<const char *>(data), size);
+        }
+        if (std::is_same<T, char16_t>::value == true && bigendian) {
+          message = "utf16be";
+          result = e->validate_utf16be_with_errors(reinterpret_cast<const char16_t *>(data), size);
+        }
+        if (std::is_same<T, char16_t>::value == true && !bigendian) {
+          message = "utf16le";
+          result = e->validate_utf16le_with_errors(reinterpret_cast<const char16_t *>(data), size);
+        }
+        if (std::is_same<T, char32_t>::value == true) {
+          message = "utf32";
+          result = e->validate_utf32_with_errors(reinterpret_cast<const char32_t *>(data), size);
+        }
+        if (reference_impl != nullptr) {
+            if (result.count != reference_result.count) {
+              std::cerr << message << std::endl;
+              std::cerr << "result.count differed for " << e->name() << ": " << result.count
+                          << " vs reference " << reference_impl->name() << ": "
+                          << reference_result.count << "\n";
+              return false;
+            }
+            if (result.error != reference_result.error) {
+              std::cerr << message << std::endl;
+
+              std::cerr << "result.error differed for " << e->name() << ": " << +result.error
+                          << " vs reference " << reference_impl->name() << ": "
+                          << +reference_result.error << "\n";
+              return false;
+            }
+        } else {
+            reference_result = result;
+            reference_impl = e;
+        }
+    }
+    return true;
 }
 
 size_t valid_utf8 = 0;
@@ -186,7 +240,7 @@ bool fuzz_this(const char *data, size_t size) {
       // It wrote utf32words * sizeof(char32_t) bytes.
       bool validutf32 = e->validate_utf32(utf32_output.get(), utf32words);
       if (!validutf32) {
-        return -1;
+        return false;
       }
       // convert it back:
       // We need a buffer where to write the UTF-8 code units.
@@ -294,7 +348,7 @@ bool fuzz_this(const char *data, size_t size) {
       };
       // convert to UTF-8
       size_t utf16words = e->convert_utf8_to_utf16le(
-          utf8_output.get(), utf8words, utf16_output.get());
+          utf8_output.get(), utf8words, utf16_output.get()); (void)utf16words;
       for (size_t i = 0; i < source.size() / 2; i++) {
         if (utf16_output.get()[i] != ((char16_t *)source.c_str())[i]) {
           print_input(source, e);
@@ -348,7 +402,7 @@ bool fuzz_this(const char *data, size_t size) {
       };
       // convert to UTF-8
       size_t utf16words = e->convert_utf8_to_utf16be(
-          utf8_output.get(), utf8words, utf16_output.get());
+          utf8_output.get(), utf8words, utf16_output.get()); (void)utf16words;
       for (size_t i = 0; i < source.size() / 2; i++) {
         if (utf16_output.get()[i] != ((char16_t *)source.c_str())[i]) {
           print_input(source, e);
@@ -396,7 +450,7 @@ bool fuzz_this(const char *data, size_t size) {
       };
       // convert to latin1
       size_t latin1words = e->convert_utf8_to_latin1(
-          utf8_output.get(), utf8words, latin1_output.get());
+          utf8_output.get(), utf8words, latin1_output.get()); (void)latin1words;
       for (size_t i = 0; i < source.size(); i++) {
         if (latin1_output.get()[i] != (source.c_str())[i]) {
           print_input(source, e);
@@ -426,7 +480,7 @@ bool fuzz_this(const char *data, size_t size) {
       };
       // convert to latin1
       size_t latin1words = e->convert_utf16le_to_latin1(
-          utf16_output.get(), utf16words, latin1_output.get());
+          utf16_output.get(), utf16words, latin1_output.get()); (void)latin1words;
       for (size_t i = 0; i < source.size(); i++) {
         if (latin1_output.get()[i] != (source.c_str())[i]) {
           print_input(source, e);
@@ -456,7 +510,7 @@ bool fuzz_this(const char *data, size_t size) {
       };
       // convert to latin1
       size_t latin1words = e->convert_utf16be_to_latin1(
-          utf16_output.get(), utf16words, latin1_output.get());
+          utf16_output.get(), utf16words, latin1_output.get()); (void) latin1words;
       for (size_t i = 0; i < source.size(); i++) {
         if (latin1_output.get()[i] != (source.c_str())[i]) {
           print_input(source, e);
@@ -486,9 +540,70 @@ bool fuzz_this(const char *data, size_t size) {
       };
       // convert to latin1
       size_t latin1words = e->convert_utf32_to_latin1(
-          utf32_output.get(), utf32words, latin1_output.get());
+          utf32_output.get(), utf32words, latin1_output.get()); (void)latin1words;
       for (size_t i = 0; i < source.size(); i++) {
         if (latin1_output.get()[i] != (source.c_str())[i]) {
+          print_input(source, e);
+          return false;
+        }
+      }
+    }
+
+    /// Base64 tests. We begin by trying to decode the input, even if we
+    /// expect it to fail.
+    {
+      size_t max_length_needed = e->maximal_binary_length_from_base64(source.data(), source.size());
+      std::vector<char> back(max_length_needed);
+      simdutf::result r = e->base64_to_binary(source.data(), source.size(), back.data());
+      if (r.error == simdutf::error_code::SUCCESS) {
+        // We expect failure but if we succeed, then we should have a roundtrip.
+        back.resize(r.count);
+        std::vector<char> back2(e->base64_length_from_binary(back.size()));
+        size_t base64size = e->binary_to_base64(back.data(), back.size(), back2.data());
+        back2.resize(base64size);
+        std::vector<char> back3(e->maximal_binary_length_from_base64(
+            back2.data(), back2.size()));
+        simdutf::result r2 = e->base64_to_binary(back2.data(), back2.size(), back3.data());
+        if (r2.error != simdutf::error_code::SUCCESS) {
+          print_input(source, e);
+          return false;
+        }
+        if(r2.count != back.size()) {
+          print_input(source, e);
+          return false;
+        }
+        if(back3.size() != back.size()) {
+          print_input(source, e);
+          return false;
+        }
+      }
+    }
+    /// Base64 tests. We encode the content as binary in base64 and we decode it,
+    /// it should always succeed.
+    {
+      std::vector<char> base64buffer(e->base64_length_from_binary(source.size()));
+      size_t base64size = e->binary_to_base64(source.data(), source.size(), base64buffer.data());
+      if(base64size != base64buffer.size()) {
+        printf("base64 round trip failed, mismatch in base64 size %zu %zu\n", base64size, base64buffer.size());
+        print_input(source, e);
+        return false;
+      }
+      std::vector<char> back(e->maximal_binary_length_from_base64(
+          base64buffer.data(), base64buffer.size()));
+      simdutf::result r = e->base64_to_binary(base64buffer.data(), base64buffer.size(), back.data());
+      if (r.error != simdutf::error_code::SUCCESS) {
+        printf("base64 round trip failed, error code %d\n", r.error);
+        print_input(source, e);
+        return false;
+      }
+      if(r.count != source.size()) {
+        printf("base64 round trip failed, not the same size %zu %zu\n", r.count, source.size());
+        print_input(source, e);
+        return false;
+      }
+      for (size_t i = 0; i < source.size(); i++) {
+        if (back[i] != (source.c_str())[i]) {
+          printf("base64 round trip failed, same size, different content\n");
           print_input(source, e);
           return false;
         }
@@ -499,6 +614,30 @@ bool fuzz_this(const char *data, size_t size) {
   return true;
 } // extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
+
+bool run_test(const char *data, size_t size) {
+  if (!fuzz_this(data, size)) {
+    dump_case();
+    return false;
+  }
+  if (!validate_tests<char>(data, size)) {
+    dump_case();
+    return false;
+  }
+  if (!validate_tests<char16_t, false>(data, size)) {
+    dump_case();
+    return false;
+  }
+  if (!validate_tests<char16_t, true>(data, size)) {
+    dump_case();
+    return false;
+  }
+  if (!validate_tests<char32_t>(data, size)) {
+    dump_case();
+    return false;
+  }
+  return true;
+}
 bool fuzz_running(size_t N) {
   std::mt19937 generator{std::random_device{}()};
   std::uniform_int_distribution<int> distribution{0, 255};
@@ -514,8 +653,7 @@ bool fuzz_running(size_t N) {
     for (size_t k = 0; k < size; k++) {
       input[k] = char(distribution(generator));
     }
-    if (!fuzz_this(input.data(), size)) {
-      dump_case();
+    if(!run_test(input.data(), size)) {
       return false;
     }
   }
@@ -524,14 +662,18 @@ bool fuzz_running(size_t N) {
 }
 
 int main(int argc, char*argv[]) {
-  std::cout << "testing the library on 'random garbage'" << std::endl;
+#ifdef RUN_IN_SPIKE_SIMULATOR
+  puts("Skipping, fuzzer cannot be run under Spike simulator.");
+  return EXIT_FAILURE;
+#endif
+  puts("testing the library on 'random garbage'");
   for (auto &e : simdutf::get_available_implementations()) {
     if (!e->supported_by_runtime_system()) {
       continue;
     }
-    std::cout << "testing: " << e->name() << std::endl;
+    printf("testing: %s\n", e->name().c_str());
   }
-  size_t N = 100000;
+  size_t N = 10000;
   if (argc == 2) {
     try {
       N = std::stoi(argv[1]);
@@ -540,13 +682,14 @@ int main(int argc, char*argv[]) {
         return EXIT_FAILURE;
     }
   }
-  std::cout << "Number of strings: " << N << std::endl;
+  printf("Number of strings: %zu\n", N);
   if (fuzz_running(N)) {
-    std::cout << "valid UTF8 = " << valid_utf8 << std::endl;
-    std::cout << "valid UTF16-BE = " << valid_utf16be << std::endl;
-    std::cout << "valid UTF16-LE = " << valid_utf16be << std::endl;
+    printf("valid UTF8 = %zu\n", valid_utf8);
+    printf("valid UTF16-BE = %zu\n", valid_utf16be);
+    printf("valid UTF16-LE = %zu\n", valid_utf16be);
     return EXIT_SUCCESS;
   } else {
+    printf("Failure\n");
     return EXIT_FAILURE;
   }
 }

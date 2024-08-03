@@ -6,7 +6,7 @@ std::pair<const char32_t*, char*> sse_convert_utf32_to_utf8(const char32_t* buf,
   const __m128i v_c080 = _mm_set1_epi16((uint16_t)0xc080); //1100 0000 1000 0000
   const __m128i v_ff80 = _mm_set1_epi16((uint16_t)0xff80); //1111 1111 1000 0000
   const __m128i v_ffff0000 = _mm_set1_epi32((uint32_t)0xffff0000); //1111 1111 1111 1111 0000 0000 0000 0000
-  const __m128i v_7fffffff = _mm_set1_epi32((uint32_t)0x7fffffff); //0111 1111 1111 1111 1111 1111 1111 1111 
+  const __m128i v_7fffffff = _mm_set1_epi32((uint32_t)0x7fffffff); //0111 1111 1111 1111 1111 1111 1111 1111
   __m128i running_max = _mm_setzero_si128();
   __m128i forbidden_bytemask = _mm_setzero_si128();
   const size_t safety_margin = 12; // to avoid overruns, see issue https://github.com/simdutf/simdutf/issues/92
@@ -21,15 +21,15 @@ std::pair<const char32_t*, char*> sse_convert_utf32_to_utf8(const char32_t* buf,
 
     // Pack 32-bit UTF-32 code units to 16-bit UTF-16 code units with unsigned saturation
     __m128i in_16 = _mm_packus_epi32(
-                                      _mm_and_si128(in, v_7fffffff), 
+                                      _mm_and_si128(in, v_7fffffff),
                                       _mm_and_si128(nextin, v_7fffffff)
-                                      );//in this context pack the two __m128 into a single 
-    //By ensuring the highest bit is set to 0(&v_7fffffff), we're making sure all values are interpreted as non-negative, or specifically, the values are within the range of valid Unicode code points.
-    //remember : having leading byte 0 means a positive number by the two complements system. Unicode is well beneath the range where you'll start getting issues so that's OK. 
+                                      );//in this context pack the two __m128 into a single
+    //By ensuring the highest bit is set to 0(&v_7fffffff), we are making sure all values are interpreted as non-negative, or specifically, the values are within the range of valid Unicode code points.
+    //remember : having leading byte 0 means a positive number by the two complements system. Unicode is well beneath the range where you'll start getting issues so that's OK.
 
     // Try to apply UTF-16 => UTF-8 from ./sse_convert_utf16_to_utf8.cpp
 
-    // Check for ASCII fast path 
+    // Check for ASCII fast path
 
     // ASCII fast path!!!!
       // We eagerly load another 32 bytes, hoping that they will be ASCII too.
@@ -68,7 +68,7 @@ std::pair<const char32_t*, char*> sse_convert_utf32_to_utf8(const char32_t* buf,
     }
 
     // no bits set above 7th bit -- find out all the ASCII characters
-    const __m128i one_byte_bytemask = _mm_cmpeq_epi16( // this takes four bytes at a time and compares: 
+    const __m128i one_byte_bytemask = _mm_cmpeq_epi16( // this takes four bytes at a time and compares:
                                                       _mm_and_si128(in_16, v_ff80), // the vector that get only the first 9 bits of each 16-bit/2-byte units
                                                        v_0000 //
                                                        ); // they should be all zero if they are ASCII. E.g. ASCII in UTF32 is of format 0000 0000 0000 0XXX XXXX
@@ -92,11 +92,11 @@ std::pair<const char32_t*, char*> sse_convert_utf32_to_utf8(const char32_t* buf,
       // t1 = [000a|aaaa|0000|0000]
       const __m128i t1 = _mm_and_si128(t0, v_1f00); // potentital first utf8 byte
       // t2 = [0000|0000|00bb|bbbb]
-      const __m128i t2 = _mm_and_si128(in_16, v_003f);// potential second utf8 byte 
+      const __m128i t2 = _mm_and_si128(in_16, v_003f);// potential second utf8 byte
       // t3 = [000a|aaaa|00bb|bbbb]
-      const __m128i t3 = _mm_or_si128(t1, t2); // first and second potential utf8 byte together 
+      const __m128i t3 = _mm_or_si128(t1, t2); // first and second potential utf8 byte together
       // t4 = [110a|aaaa|10bb|bbbb]
-      const __m128i t4 = _mm_or_si128(t3, v_c080); // t3 | 1100 0000 1000 0000 = full potential 2-byte utf8 unit 
+      const __m128i t4 = _mm_or_si128(t3, v_c080); // t3 | 1100 0000 1000 0000 = full potential 2-byte utf8 unit
 
       // 2. merge ASCII and 2-byte codewords
       const __m128i utf8_unpacked = _mm_blendv_epi8(t4, in_16, one_byte_bytemask);
@@ -258,7 +258,6 @@ std::pair<const char32_t*, char*> sse_convert_utf32_to_utf8(const char32_t* buf,
 
 
 std::pair<result, char*> sse_convert_utf32_to_utf8_with_errors(const char32_t* buf, size_t len, char* utf8_output) {
-
   const char32_t* end = buf + len;
   const char32_t* start = buf;
 
@@ -273,10 +272,9 @@ std::pair<result, char*> sse_convert_utf32_to_utf8_with_errors(const char32_t* b
   const size_t safety_margin = 12; // to avoid overruns, see issue https://github.com/simdutf/simdutf/issues/92
 
   while (buf + 16 + safety_margin <= end) {
-    // We load two 16 bytes registers for a total of 32 bytes or 16 characters.
+    // We load two 16 bytes registers for a total of 32 bytes or 8 characters.
     __m128i in = _mm_loadu_si128((__m128i*)buf);
     __m128i nextin = _mm_loadu_si128((__m128i*)buf+1);
-
     // Check for too large input
     __m128i max_input = _mm_max_epu32(_mm_max_epu32(in, nextin), v_10ffff);
     if(static_cast<uint16_t>(_mm_movemask_epi8(_mm_cmpeq_epi32(max_input, v_10ffff))) != 0xffff) {
@@ -290,14 +288,6 @@ std::pair<result, char*> sse_convert_utf32_to_utf8_with_errors(const char32_t* b
 
     // Check for ASCII fast path
     if(_mm_testz_si128(in_16, v_ff80)) { // ASCII fast path!!!!
-      // We eagerly load another 32 bytes, hoping that they will be ASCII too.
-      // The intuition is that we try to collect 16 ASCII characters which requires
-      // a total of 64 bytes of input. If we fail, we just pass thirdin and fourthin
-      // as our new inputs.
-      __m128i thirdin = _mm_loadu_si128((__m128i*)buf+2);
-      __m128i fourthin = _mm_loadu_si128((__m128i*)buf+3);
-      __m128i nextin_16 = _mm_packus_epi32(_mm_and_si128(thirdin, v_7fffffff), _mm_and_si128(fourthin, v_7fffffff));
-      if(!_mm_testz_si128(nextin_16, v_ff80)) {
         // 1. pack the bytes
         // obviously suboptimal.
         const __m128i utf8_packed = _mm_packus_epi16(in_16,in_16);
@@ -306,25 +296,7 @@ std::pair<result, char*> sse_convert_utf32_to_utf8_with_errors(const char32_t* b
         // 3. adjust pointers
         buf += 8;
         utf8_output += 8;
-        // Proceed with next input
-        in_16 = nextin_16;
-        __m128i next_max_input = _mm_max_epu32(_mm_max_epu32(thirdin, fourthin), v_10ffff);
-        if(static_cast<uint16_t>(_mm_movemask_epi8(_mm_cmpeq_epi32(next_max_input, v_10ffff))) != 0xffff) {
-          return std::make_pair(result(error_code::TOO_LARGE, buf - start), utf8_output);
-        }
-        // We need to update in and nextin because they are used later.
-        in = thirdin;
-        nextin = fourthin;
-      } else {
-        // 1. pack the bytes
-        const __m128i utf8_packed = _mm_packus_epi16(in_16, nextin_16);
-        // 2. store (16 bytes)
-        _mm_storeu_si128((__m128i*)utf8_output, utf8_packed);
-        // 3. adjust pointers
-        buf += 16;
-        utf8_output += 16;
-        continue; // we are done for this round!
-      }
+        continue;
     }
 
     // no bits set above 7th bit
@@ -506,6 +478,5 @@ std::pair<result, char*> sse_convert_utf32_to_utf8_with_errors(const char32_t* b
       buf += k;
     }
   } // while
-
   return std::make_pair(result(error_code::SUCCESS, buf - start), utf8_output);
 }

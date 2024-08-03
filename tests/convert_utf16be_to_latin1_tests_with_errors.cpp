@@ -1,7 +1,6 @@
 #include "simdutf.h"
 
 #include <array>
-#include <iostream>
 
 #include <tests/reference/validate_utf16.h>
 #include <tests/reference/decode_utf16.h>
@@ -17,13 +16,44 @@ namespace {
   constexpr int trials = 1000;
 }
 
-TEST(convert_2_UTF16_bytes) {
-  int seed = {1234};
-  for(size_t trial = 0; trial < trials; trial ++) {
-    if ((trial % 100) == 0) { std::cout << "."; std::cout.flush(); }
+TEST(issue_convert_utf16be_to_latin1_with_errors_cbf29ce484222384)
+{
+   const unsigned char data[] = {0x20,
+                                 0x00,
+                                 0x20,
+                                 0x00,
+                                 0x20,
+                                 0x00,
+                                 0x20,
+                                 0x00,
+                                 0x20,
+                                 0x00,
+                                 0x20,
+                                 0x00,
+                                 0x20,
+                                 0x00,
+                                 0x20,
+                                 0x00};
+   constexpr std::size_t data_len_bytes = sizeof(data);
+   constexpr std::size_t data_len = data_len_bytes / sizeof(char16_t);
+   std::vector<char> output(4 * data_len);
+   const auto r = implementation.convert_utf16be_to_latin1_with_errors((const char16_t *) data,
+                                                                       data_len,
+                                                                       output.data());
+   /*
+   got return [count=0, error=TOO_LARGE] from implementation icelake
+   got return [count=0, error=TOO_LARGE] from implementation haswell
+   got return [count=8, error=SUCCESS] from implementation westmere
+   got return [count=0, error=TOO_LARGE] from implementation fallback
+   */
+
+   ASSERT_EQUAL(r.count, 0);
+   ASSERT_EQUAL(r.error, simdutf::error_code::TOO_LARGE);
+}
+
+TEST_LOOP(trials, convert_2_UTF16_bytes) {
     // range for 1, 2 or 3 UTF-8 bytes
-    simdutf::tests::helpers::RandomIntRanges random({{0x0000, 0x00ff},
-                                                     }, seed);
+    simdutf::tests::helpers::RandomIntRanges random({{0x0000, 0x00ff}}, seed);
 
     auto procedure = [&implementation](const char16_t* utf16le, size_t size, char* latin1) -> size_t {
 
@@ -41,7 +71,6 @@ TEST(convert_2_UTF16_bytes) {
       ASSERT_TRUE(test(procedure));
       ASSERT_TRUE(test.check_size(size_procedure));
     }
-  }
 }
 
 TEST(convert_fails_if_input_too_large) {
@@ -85,6 +114,4 @@ TEST(convert_fails_if_input_too_large) {
   }
 }
 
-int main(int argc, char* argv[]) {
-  return simdutf::test::main(argc, argv);
-}
+TEST_MAIN

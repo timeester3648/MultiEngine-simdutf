@@ -1,6 +1,5 @@
 #ifndef SIMDUTF_UTF8_TO_LATIN1_H
 #define SIMDUTF_UTF8_TO_LATIN1_H
-#include <iostream>
 
 namespace simdutf {
 namespace scalar {
@@ -45,7 +44,7 @@ inline size_t convert(const char* buf, size_t len, char* latin_output) {
       // range check -
       uint32_t code_point = (leading_byte & 0b00011111) << 6 | (data[pos + 1] & 0b00111111); // assembles the Unicode code point from the two bytes. It does this by discarding the leading 110 and 10 bits from the two bytes, shifting the remaining bits of the first byte, and then combining the results with a bitwise OR operation.
       if (code_point < 0x80 || 0xFF < code_point) {
-        return 0; // We only care about the range 129-255 which is Non-ASCII latin1 characters. A code_point beneath 0x80 is invalid as it's already covered by bytes whose leading bit is zero. 
+        return 0; // We only care about the range 129-255 which is Non-ASCII latin1 characters. A code_point beneath 0x80 is invalid as it is already covered by bytes whose leading bit is zero.
       }
       *latin_output++ = char(code_point);
       pos += 2;
@@ -130,7 +129,7 @@ inline result rewind_and_convert_with_errors(size_t prior_bytes, const char* buf
   bool found_leading_bytes{false};
   // important: it is i <= how_far_back and not 'i < how_far_back'.
   for(size_t i = 0; i <= how_far_back; i++) {
-    unsigned char byte = buf[0-i];
+    unsigned char byte = buf[-static_cast<std::ptrdiff_t>(i)];
     found_leading_bytes = ((byte & 0b11000000) != 0b10000000);
     if(found_leading_bytes) {
       buf -= i;

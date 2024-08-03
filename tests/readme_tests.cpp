@@ -2,10 +2,70 @@
  * Special tests. Specific cases.
  */
 #include "simdutf.h"
-#include <iostream>
 #include <memory>
+#include <iostream>
 
 #include <tests/helpers/test.h>
+
+TEST(base64_fun) {
+  std::cout << "==== base64_fun ====\n" << std::endl;
+  std::vector<std::string> sources = {
+      "  A  A  ", "  A  A  G  A  /  v  8  ", "  A  A  G  A  /  v  8  =  ", "  A  A  G  A  /  v  8  =  =  "};
+  std::vector<std::vector<uint8_t>> expected = {
+      {0}, {0, 0x1, 0x80, 0xfe, 0xff}, {0, 0x1, 0x80, 0xfe, 0xff}, {}}; // last one is in error
+  for(size_t i = 0; i < sources.size(); i++) {
+    const std::string &source = sources[i];
+    std::cout << "source: '" << source << "'" << std::endl;
+    // allocate enough memory for the maximal binary length
+    std::vector<uint8_t> buffer(simdutf::maximal_binary_length_from_base64(
+       source.data(), source.size()));
+    // convert to binary and check for errors
+    simdutf::result r = simdutf::base64_to_binary(
+        source.data(), source.size(), (char*)buffer.data());
+    if(r.error != simdutf::error_code::SUCCESS) {
+      ASSERT_TRUE(expected[i].empty());
+      std::cout << "output: error" << std::endl;
+    } else {
+      buffer.resize(r.count); // in case of success, r.count contains the output length
+      ASSERT_TRUE(buffer == expected[i]);
+      std::cout << "output: " << r.count << " bytes" << std::endl;
+    }
+  }
+}
+
+
+TEST(base64_fun_safe) {
+  std::cout << "==== base64_fun ====\n" << std::endl;
+  std::vector<std::string> sources = {
+      "  A  A  ", "  A  A  G  A  /  v  8  ", "  A  A  G  A  /  v  8  =  ", "  A  A  G  A  /  v  8  =  =  "};
+  std::vector<std::vector<uint8_t>> expected = {
+      {0}, {0, 0x1, 0x80, 0xfe, 0xff}, {0, 0x1, 0x80, 0xfe, 0xff}, {}}; // last one is in error
+  for(size_t i = 0; i < sources.size(); i++) {
+    const std::string &source = sources[i];
+    std::cout << "source: '" << source << "'" << std::endl;
+    // allocate enough memory for the maximal binary length
+    std::vector<uint8_t> buffer(simdutf::maximal_binary_length_from_base64(
+       source.data(), source.size()));
+    // convert to binary and check for errors
+    size_t output_length = buffer.size();
+    simdutf::result r = simdutf::base64_to_binary_safe(
+        source.data(), source.size(), (char*)buffer.data(), output_length);
+    if(r.error != simdutf::error_code::SUCCESS) {
+      ASSERT_TRUE(expected[i].empty());
+      std::cout << "output: error" << std::endl;
+    } else {
+      buffer.resize(output_length); // in case of success, output_length contains the output length
+      ASSERT_TRUE(buffer == expected[i]);
+      std::cout << "ouput: " << output_length << " bytes" << std::endl;
+      std::cout << "input (consumed): " << r.count << " bytes" << std::endl;
+    }
+  }
+}
+
+// this is a compile test
+void check_simdutf_result() {
+  simdutf::result r;
+}
 
 // this is a compile test
 int main_demo() {
@@ -13,9 +73,9 @@ int main_demo() {
   // 4 == strlen(source)
   bool validutf8 = simdutf::validate_utf8(source, 4);
   if (validutf8) {
-    std::cout << "valid UTF-8" << std::endl;
+    puts("valid UTF-8");
   } else {
-    std::cerr << "invalid UTF-8" << std::endl;
+    puts("invalid UTF-8");
     return EXIT_FAILURE;
   }
   // We need a buffer where to write the UTF-16LE code units.
@@ -24,13 +84,13 @@ int main_demo() {
   // convert to UTF-16LE
   size_t utf16words =
       simdutf::convert_utf8_to_utf16le(source, 4, utf16_output.get());
-  std::cout << "wrote " << utf16words << " UTF-16LE code units." << std::endl;
+  printf("wrote %zu UTF-16LE code units.", utf16words);
   // It wrote utf16words * sizeof(char16_t) bytes.
   bool validutf16 = simdutf::validate_utf16le(utf16_output.get(), utf16words);
   if (validutf16) {
-    std::cout << "valid UTF-16LE" << std::endl;
+    puts("valid UTF-16LE");
   } else {
-    std::cerr << "invalid UTF-16LE" << std::endl;
+    puts("invalid UTF-16LE");
     return EXIT_FAILURE;
   }
   // convert it back:
@@ -41,14 +101,14 @@ int main_demo() {
   // convert to UTF-8
   size_t utf8words = simdutf::convert_utf16le_to_utf8(
       utf16_output.get(), utf16words, utf8_output.get());
-  std::cout << "wrote " << utf8words << " UTF-8 code units." << std::endl;
+  printf("wrote %zu UTF-8 code units.", utf8words);
   std::string final_string(utf8_output.get(), utf8words);
-  std::cout << final_string << std::endl;
+  puts(final_string.c_str());
   if (final_string != source) {
-    std::cerr << "bad conversion" << std::endl;
+    puts("bad conversion");
     return EXIT_FAILURE;
   } else {
-    std::cerr << "perfect round trip" << std::endl;
+    puts("perfect round trip");
   }
   return EXIT_SUCCESS;
 }
@@ -106,8 +166,8 @@ TEST(error_location_badascii) {
   // this ASCII string has a bad byte at index 5
   std::string bad_ascii = "\x20\x20\x20\x20\x20\xff\x20\x20\x20";
   simdutf::result res = implementation.validate_ascii_with_errors(bad_ascii.data(), bad_ascii.size());
-  if(res.error != simdutf::error_code::SUCCESS) {
-    std::cerr << "error at index " << res.count << std::endl;
+  if (res.error != simdutf::error_code::SUCCESS) {
+    printf("error at index %zu\n", res.count);
   }
   ASSERT_EQUAL(res.error, simdutf::error_code::TOO_LARGE);
   ASSERT_EQUAL(res.count, 5);
@@ -119,13 +179,13 @@ TEST(error_location_badutf8) {
   std::string bad_utf8 = "\xc3\xa9\xc3\xa9\x20\xff\xc3\xa9";
   simdutf::result res = implementation.validate_utf8_with_errors(bad_utf8.data(), bad_utf8.size());
   if(res.error != simdutf::error_code::SUCCESS) {
-    std::cerr << "error at index " << res.count << std::endl;
+    printf("error at index %zu\n", res.count);
   }
   ASSERT_EQUAL(res.error, simdutf::error_code::HEADER_BITS);
   ASSERT_EQUAL(res.count, 5);
   res = implementation.validate_utf8_with_errors(bad_utf8.data(), res.count);
   if(res.error == simdutf::error_code::SUCCESS) {
-    std::cerr << "we have " << res.count << "valid bytes" << std::endl;
+    printf("we have transcoded %zu valud bytes", res.count);
   }
   ASSERT_EQUAL(res.error, simdutf::error_code::SUCCESS);
   ASSERT_EQUAL(res.count, 5);
@@ -141,17 +201,16 @@ TEST(error_location_badutf8_transcoding) {
   simdutf::result res = simdutf::convert_utf8_to_utf16_with_errors(bad_utf8.data(), bad_utf8.size(), utf16.get());
 
   if(res.error != simdutf::error_code::SUCCESS) {
-    std::cerr << "error at index " << res.count << std::endl;
+    printf("error at index %zu\n", res.count);
   }
   ASSERT_EQUAL(res.error, simdutf::error_code::HEADER_BITS);
   ASSERT_EQUAL(res.count, 5);
   res = simdutf::convert_utf8_to_utf16_with_errors(bad_utf8.data(), res.count, utf16.get());
   if(res.error == simdutf::error_code::SUCCESS) {
-    std::cerr << "we have transcoded " << res.count << " characters" << std::endl;
+    printf("we have transcoded %zu characters", res.count);
   }
   ASSERT_EQUAL(res.error, simdutf::error_code::SUCCESS);
   ASSERT_EQUAL(res.count, 3);
 }
 
-
-int main(int argc, char *argv[]) { return simdutf::test::main(argc, argv); }
+TEST_MAIN

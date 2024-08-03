@@ -20,10 +20,9 @@ simdutf_unused simdutf_really_inline simd8<bool> must_be_continuation(const simd
 }
 
 simdutf_really_inline simd8<bool> must_be_2_3_continuation(const simd8<uint8_t> prev2, const simd8<uint8_t> prev3) {
-  simd8<uint8_t> is_third_byte  = prev2.saturating_sub(0b11100000u-1); // Only 111_____ will be > 0
-  simd8<uint8_t> is_fourth_byte = prev3.saturating_sub(0b11110000u-1); // Only 1111____ will be > 0
-  // Caller requires a bool (all 1's). All values resulting from the subtraction will be <= 64, so signed comparison is fine.
-  return simd8<int8_t>(is_third_byte | is_fourth_byte) > int8_t(0);
+  simd8<uint8_t> is_third_byte  = prev2.saturating_sub(0xe0u-0x80); // Only 111_____ will be >= 0x80
+  simd8<uint8_t> is_fourth_byte = prev3.saturating_sub(0xf0u-0x80); // Only 1111____ will be >= 0x80
+  return simd8<bool>(is_third_byte | is_fourth_byte);
 }
 
 #include "westmere/internal/loader.cpp"
@@ -48,6 +47,7 @@ simdutf_really_inline simd8<bool> must_be_2_3_continuation(const simd8<uint8_t> 
 #include "westmere/sse_convert_utf32_to_latin1.cpp"
 #include "westmere/sse_convert_utf32_to_utf8.cpp"
 #include "westmere/sse_convert_utf32_to_utf16.cpp"
+#include "westmere/sse_base64.cpp"
 
 } // unnamed namespace
 } // namespace SIMDUTF_IMPLEMENTATION
@@ -694,7 +694,7 @@ simdutf_warn_unused size_t implementation::utf8_length_from_latin1(const char * 
       __m128i input4 = _mm_loadu_si128((const __m128i *)(str + i + 3*sizeof(__m128i)));
       __m128i input12 = _mm_add_epi8(
                                       _mm_cmpgt_epi8(
-                                                    _mm_setzero_si128(), 
+                                                    _mm_setzero_si128(),
                                                     input1),
                                       _mm_cmpgt_epi8(
                                                     _mm_setzero_si128(),
@@ -779,6 +779,33 @@ simdutf_warn_unused size_t implementation::utf32_length_from_utf8(const char * i
   return utf8::count_code_points(input, length);
 }
 
+simdutf_warn_unused size_t implementation::maximal_binary_length_from_base64(const char * input, size_t length) const noexcept {
+  return scalar::base64::maximal_binary_length_from_base64(input, length);
+}
+
+simdutf_warn_unused result implementation::base64_to_binary(const char * input, size_t length, char* output, base64_options options) const noexcept {
+  return (options & base64_url) ? compress_decode_base64<true>(output, input, length, options) : compress_decode_base64<false>(output, input, length, options);
+}
+
+simdutf_warn_unused size_t implementation::maximal_binary_length_from_base64(const char16_t * input, size_t length) const noexcept {
+  return scalar::base64::maximal_binary_length_from_base64(input, length);
+}
+
+simdutf_warn_unused result implementation::base64_to_binary(const char16_t * input, size_t length, char* output, base64_options options) const noexcept {
+  return (options & base64_url) ? compress_decode_base64<true>(output, input, length, options) : compress_decode_base64<false>(output, input, length, options);
+}
+
+simdutf_warn_unused size_t implementation::base64_length_from_binary(size_t length, base64_options options) const noexcept {
+  return scalar::base64::base64_length_from_binary(length, options);
+}
+
+size_t implementation::binary_to_base64(const char * input, size_t length, char* output, base64_options options) const noexcept {
+  if(options & base64_url) {
+    return encode_base64<true>(output, input, length, options);
+  } else {
+    return encode_base64<false>(output, input, length, options);
+  }
+}
 } // namespace SIMDUTF_IMPLEMENTATION
 } // namespace simdutf
 

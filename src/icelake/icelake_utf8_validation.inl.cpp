@@ -59,7 +59,7 @@ simdutf_really_inline __m512i check_special_cases(__m512i input, const __m512i p
   }
   //
   // Return nonzero if there are incomplete multibyte characters at the end of the block:
-  // e.g. if there is a 4-byte character, but it's 3 bytes from the end.
+  // e.g. if there is a 4-byte character, but it is 3 bytes from the end.
   //
   simdutf_really_inline __m512i is_incomplete(const __m512i input) {
     // If the previous input's last 3 bytes match this, they're too short (they ended at EOF):
@@ -123,5 +123,4 @@ simdutf_really_inline __m512i check_special_cases(__m512i input, const __m512i p
     simdutf_really_inline bool errors() const {
         return _mm512_test_epi8_mask(this->error, this->error) != 0;
     }
-
   }; // struct avx512_utf8_checker

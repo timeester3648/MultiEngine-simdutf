@@ -1,12 +1,8 @@
 #include "simdutf.h"
 
-#include <array>
-#include <iostream>
-
 #include <tests/helpers/transcode_test_base.h>
 #include <tests/helpers/random_int.h>
 #include <tests/helpers/test.h>
-#include <memory>
 
 namespace {
   using simdutf::tests::helpers::transcode_utf8_to_utf16_test_base;
@@ -14,9 +10,7 @@ namespace {
   constexpr size_t trials = 10000;
 }
 
-TEST(convert_all_latin1) {
-  for(size_t trial = 0; trial < trials; trial ++) {
-    if ((trial % 100) == 0) { std::cout << "."; std::cout.flush(); }
+TEST_LOOP(trials, convert_all_latin1) {
     size_t counter = 0;
     auto generator = [&counter]() -> uint32_t {
       return counter++ & 0xFF; 
@@ -31,9 +25,6 @@ TEST(convert_all_latin1) {
       simdutf::tests::helpers::transcode_latin1_to_utf32_test_base test(generator, 256);
       ASSERT_TRUE(test(procedure));
       ASSERT_TRUE(test.check_size(size_procedure));
-  }
 }
 
-int main(int argc, char* argv[]) {
-  return simdutf::test::main(argc, argv);
-}
+TEST_MAIN

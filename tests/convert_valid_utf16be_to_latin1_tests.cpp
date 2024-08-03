@@ -1,10 +1,7 @@
 #include "simdutf.h"
 
 #include <array>
-#include <iostream>
 
-#include <tests/reference/validate_utf16.h>
-#include <tests/reference/decode_utf16.h>
 #include <tests/helpers/transcode_test_base.h>
 #include <tests/helpers/random_int.h>
 #include <tests/helpers/test.h>
@@ -17,10 +14,7 @@ namespace {
   constexpr int trials = 1000;
 }
 
-TEST(convert_2_UTF16_bytes) {
-  int seed = {1234};
-  for(size_t trial = 0; trial < trials; trial ++) {
-    if ((trial % 100) == 0) { std::cout << "."; std::cout.flush(); }
+TEST_LOOP(trials, convert_2_UTF16_bytes) {
     // range for 1, 2 or 3 UTF-8 bytes
     simdutf::tests::helpers::RandomIntRanges random({{0x0000, 0x00ff}, }, seed);
 
@@ -38,9 +32,6 @@ TEST(convert_2_UTF16_bytes) {
       ASSERT_TRUE(test(procedure));
       ASSERT_TRUE(test.check_size(size_procedure));
     }
-  }
 }
 
-int main(int argc, char* argv[]) {
-  return simdutf::test::main(argc, argv);
-}
+TEST_MAIN

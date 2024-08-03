@@ -10,6 +10,7 @@ namespace utf16_to_latin1 {
 
 template <endianness big_endian>
 inline size_t convert(const char16_t* buf, size_t len, char* latin_output) {
+  if(len == 0) { return 0; }
   const uint16_t *data = reinterpret_cast<const uint16_t *>(buf);
   size_t pos = 0;
   std::vector<char> temp_output(len);
@@ -27,12 +28,13 @@ inline size_t convert(const char16_t* buf, size_t len, char* latin_output) {
 
   // Only copy to latin_output if there were no errors
   std::memcpy(latin_output, temp_output.data(), len);
-  
+
   return current_write - temp_output.data();
 }
 
 template <endianness big_endian>
 inline result convert_with_errors(const char16_t* buf, size_t len, char* latin_output) {
+  if(len == 0) { return result(error_code::SUCCESS,0); }
  const uint16_t *data = reinterpret_cast<const uint16_t *>(buf);
   size_t pos = 0;
   char* start{latin_output};

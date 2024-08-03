@@ -54,6 +54,19 @@ POSSIBILITY OF SUCH DAMAGE.
 #include <cpuid.h>
 #endif
 
+#include "simdutf/portability.h"
+
+// RISC-V ISA detection utilities
+#if SIMDUTF_IS_RISCV64 && defined(__linux__)
+#include <unistd.h> // for syscall
+// We define these ourselves, for backwards compatibility
+struct simdutf_riscv_hwprobe { int64_t key; uint64_t value; };
+#define simdutf_riscv_hwprobe(...) syscall(258, __VA_ARGS__)
+#define SIMDUTF_RISCV_HWPROBE_KEY_IMA_EXT_0 4
+#define SIMDUTF_RISCV_HWPROBE_IMA_V    (1 << 2)
+#define SIMDUTF_RISCV_HWPROBE_EXT_ZVBB (1 << 17)
+#endif // SIMDUTF_IS_RISCV64 && defined(__linux__)
+
 namespace simdutf {
 namespace internal {
 
@@ -75,7 +88,9 @@ enum instruction_set {
   AVX512BW = 0x4000,
   AVX512VL = 0x8000,
   AVX512VBMI2 = 0x10000,
-  AVX512VPOPCNTDQ = 0x2000
+  AVX512VPOPCNTDQ = 0x2000,
+  RVV = 0x4000,
+  ZVBB = 0x8000,
 };
 
 #if defined(__PPC64__)
@@ -84,7 +99,35 @@ static inline uint32_t detect_supported_architectures() {
   return instruction_set::ALTIVEC;
 }
 
-#elif defined(__aarch64__) || defined(_M_ARM64)
+#elif SIMDUTF_IS_RISCV64
+
+static inline uint32_t detect_supported_architectures() {
+  uint32_t host_isa = instruction_set::DEFAULT;
+#if SIMDUTF_IS_RVV
+  host_isa |= instruction_set::RVV;
+#endif
+#if SIMDUTF_IS_ZVBB
+  host_isa |= instruction_set::ZVBB;
+#endif
+#if defined(__linux__)
+  simdutf_riscv_hwprobe probes[] = { { SIMDUTF_RISCV_HWPROBE_KEY_IMA_EXT_0, 0 } };
+  long ret = simdutf_riscv_hwprobe(&probes, sizeof probes/sizeof *probes, 0, nullptr, 0);
+  if (ret == 0) {
+    uint64_t extensions = probes[0].value;
+    if (extensions & SIMDUTF_RISCV_HWPROBE_IMA_V)
+      host_isa |= instruction_set::RVV;
+    if (extensions & SIMDUTF_RISCV_HWPROBE_EXT_ZVBB)
+      host_isa |= instruction_set::ZVBB;
+  }
+#endif
+#if defined(RUN_IN_SPIKE_SIMULATOR)
+  // Proxy Kernel does not implement yet hwprobe syscall
+  host_isa |= instruction_set::RVV;
+#endif
+  return host_isa;
+}
+
+#elif defined(__aarch64__) || defined(_M_ARM64) || defined(_M_ARM64EC)
 
 static inline uint32_t detect_supported_architectures() {
   return instruction_set::NEON;

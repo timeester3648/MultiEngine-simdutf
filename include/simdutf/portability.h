@@ -81,9 +81,9 @@
 #include <iso646.h>
 #endif
 
-#if defined(__x86_64__) || defined(_M_AMD64)
+#if (defined(__x86_64__) || defined(_M_AMD64)) && !defined(_M_ARM64EC)
 #define SIMDUTF_IS_X86_64 1
-#elif defined(__aarch64__) || defined(_M_ARM64)
+#elif defined(__aarch64__) || defined(_M_ARM64) || defined(_M_ARM64EC)
 #define SIMDUTF_IS_ARM64 1
 #elif defined(__PPC64__) || defined(_M_PPC64)
 //#define SIMDUTF_IS_PPC64 1
@@ -93,6 +93,30 @@
 // s390 IBM system. Big endian.
 #elif (defined(__riscv) || defined(__riscv__)) && __riscv_xlen == 64
 // RISC-V 64-bit
+#define SIMDUTF_IS_RISCV64 1
+
+#if __clang_major__ >= 19
+// Does the compiler support target regions for RISC-V
+#define SIMDUTF_HAS_RVV_TARGET_REGION 1
+#endif
+
+#if __riscv_v_intrinsic >= 11000
+#define SIMDUTF_HAS_RVV_INTRINSICS 1
+#endif
+
+#define SIMDUTF_HAS_ZVBB_INTRINSICS 0 // there is currently no way to detect this
+
+#if SIMDUTF_HAS_RVV_INTRINSICS && __riscv_vector && __riscv_v_min_vlen >= 128 && __riscv_v_elen >= 64
+// RISC-V V extension
+#define SIMDUTF_IS_RVV 1
+#if SIMDUTF_HAS_ZVBB_INTRINSICS && __riscv_zvbb >= 1000000
+// RISC-V Vector Basic Bit-manipulation
+#define SIMDUTF_IS_ZVBB 1
+#endif
+#endif
+
+#elif defined(__loongarch_lp64)
+// LoongArch 64-bit
 #else
 // The simdutf library is designed
 // for 64-bit processors and it seems that you are not

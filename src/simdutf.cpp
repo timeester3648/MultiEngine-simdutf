@@ -1,4 +1,6 @@
 #include "simdutf.h"
+// We include base64_tables once.
+#include "tables/base64_tables.h"
 #include "implementation.cpp"
 #include "encoding_types.cpp"
 #include "error.cpp"
@@ -14,6 +16,7 @@
 #include "scalar/utf16.h"
 #include "scalar/utf32.h"
 #include "scalar/latin1.h"
+#include "scalar/base64.h"
 
 #include "scalar/utf32_to_utf8/valid_utf32_to_utf8.h"
 #include "scalar/utf32_to_utf8/utf32_to_utf8.h"
@@ -65,6 +68,9 @@ SIMDUTF_DISABLE_UNDESIRED_WARNINGS
 #endif
 #if SIMDUTF_IMPLEMENTATION_PPC64
 #include "ppc64/implementation.cpp"
+#endif
+#if SIMDUTF_IMPLEMENTATION_RVV
+#include "rvv/implementation.cpp"
 #endif
 #if SIMDUTF_IMPLEMENTATION_WESTMERE
 #include "westmere/implementation.cpp"
