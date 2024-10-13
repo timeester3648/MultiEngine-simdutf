@@ -1,15 +1,15 @@
 
 option(SIMDUTF_SANITIZE "Sanitize addresses" OFF)
 option(SIMDUTF_SANITIZE_UNDEFINED "Sanitize undefined behavior" OFF)
-option(SIMDUTF_ALWAYS_INCLUDE_FALLBACK "Sanitize addresses" OFF)
+option(SIMDUTF_ALWAYS_INCLUDE_FALLBACK "Always include fallback" OFF)
 
 if (NOT CMAKE_BUILD_TYPE)
   message(STATUS "No build type selected, default to Release")
   if(SIMDUTF_SANITIZE OR SIMDUTF_SANITIZE_UNDEFINED)
     set(CMAKE_BUILD_TYPE Debug CACHE STRING "Choose the type of build." FORCE)
     # SIMDUTF_SANITIZE only applies to gcc/clang:
-    message(STATUS "Setting debug optimization flag to -O1.")
-    set(CMAKE_CXX_FLAGS_DEBUG "-O1" CACHE STRING "" FORCE)
+    message(STATUS "Setting debug optimization flag to -O1 -g.")
+    set(CMAKE_CXX_FLAGS_DEBUG "-O1 -g" CACHE STRING "" FORCE)
   else()
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Choose the type of build." FORCE)
   endif()

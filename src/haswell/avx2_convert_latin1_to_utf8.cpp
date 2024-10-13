@@ -1,12 +1,13 @@
-std::pair<const char *, char *> avx2_convert_latin1_to_utf8(const char *latin1_input, size_t len,
-                           char *utf8_output) {
+std::pair<const char *, char *>
+avx2_convert_latin1_to_utf8(const char *latin1_input, size_t len,
+                            char *utf8_output) {
   const char *end = latin1_input + len;
   const __m256i v_0000 = _mm256_setzero_si256();
   const __m256i v_c080 = _mm256_set1_epi16((int16_t)0xc080);
   const __m256i v_ff80 = _mm256_set1_epi16((int16_t)0xff80);
   const size_t safety_margin = 12;
 
-  while (latin1_input + 16 + safety_margin <= end) {
+  while (end - latin1_input >= std::ptrdiff_t(16 + safety_margin)) {
     __m128i in8 = _mm_loadu_si128((__m128i *)latin1_input);
     // a single 16-bit UTF-16 word can yield 1, 2 or 3 UTF-8 bytes
     const __m128i v_80 = _mm_set1_epi8((char)0x80);
@@ -41,8 +42,10 @@ std::pair<const char *, char *> avx2_convert_latin1_to_utf8(const char *latin1_i
     // 2. merge ASCII and 2-byte codewords
 
     // no bits set above 7th bit
-    const __m256i one_byte_bytemask = _mm256_cmpeq_epi16(_mm256_and_si256(in, v_ff80), v_0000);
-    const uint32_t one_byte_bitmask = static_cast<uint32_t>(_mm256_movemask_epi8(one_byte_bytemask));
+    const __m256i one_byte_bytemask =
+        _mm256_cmpeq_epi16(_mm256_and_si256(in, v_ff80), v_0000);
+    const uint32_t one_byte_bitmask =
+        static_cast<uint32_t>(_mm256_movemask_epi8(one_byte_bytemask));
 
     const __m256i utf8_unpacked = _mm256_blendv_epi8(t4, in, one_byte_bytemask);
 

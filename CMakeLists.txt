@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.15)
 project(simdutf
   DESCRIPTION "Fast Unicode validation, transcoding and processing"
   LANGUAGES CXX
-  VERSION 5.3.1
+  VERSION 5.6.0
 )
 
 include (TestBigEndian)
@@ -23,12 +23,14 @@ include(GNUInstallDirs)
 include(CTest)
 include(cmake/simdutf-flags.cmake)
 
-set(SIMDUTF_LIB_VERSION "9.0.0" CACHE STRING "simdutf library version")
-set(SIMDUTF_LIB_SOVERSION "9" CACHE STRING "simdutf library soversion")
+set(SIMDUTF_LIB_VERSION "11.0.0" CACHE STRING "simdutf library version")
+set(SIMDUTF_LIB_SOVERSION "11" CACHE STRING "simdutf library soversion")
 option(SIMDUTF_TESTS "Whether the tests are included as part of the CMake Build." ON)
 option(SIMDUTF_BENCHMARKS "Whether the benchmarks are included as part of the CMake Build." OFF)
 option(SIMDUTF_TOOLS "Whether the tools are included as part of the CMake build. Requires C++17 or better." ON)
 option(SIMDUTF_ICONV "Whether to use iconv as part of the CMake build if available." ON)
+option(SIMDUTF_FUZZERS "Whether to build the fuzzers." Off)
+
 
 set(SIMDUTF_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -196,4 +198,8 @@ if(NOT SIMDUTF_SANITIZE)
       WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
     )
   endif()
+endif()
+
+if(SIMDUTF_FUZZERS)
+    add_subdirectory(fuzz)
 endif()
