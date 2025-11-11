@@ -1,5 +1,3 @@
-#include "scalar/utf8_to_latin1/utf8_to_latin1.h"
-
 namespace simdutf {
 namespace SIMDUTF_IMPLEMENTATION {
 namespace {
@@ -158,6 +156,9 @@ struct validating_transcoder {
         uint64_t utf8_continuation_mask =
             input.lt(-65 + 1); // -64 is 1100 0000 in twos complement. Note: in
                                // this case, we also have ASCII to account for.
+        if (utf8_continuation_mask & 1) {
+          return 0; // error
+        }
         uint64_t utf8_leading_mask = ~utf8_continuation_mask;
         uint64_t utf8_end_of_code_point_mask = utf8_leading_mask >> 1;
         // We process in blocks of up to 12 bytes except possibly

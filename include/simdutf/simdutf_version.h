@@ -4,18 +4,18 @@
 #define SIMDUTF_SIMDUTF_VERSION_H
 
 /** The version of simdutf being used (major.minor.revision) */
-#define SIMDUTF_VERSION "5.6.0"
+#define SIMDUTF_VERSION "7.5.0"
 
 namespace simdutf {
 enum {
   /**
    * The major version (MAJOR.minor.revision) of simdutf being used.
    */
-  SIMDUTF_VERSION_MAJOR = 5,
+  SIMDUTF_VERSION_MAJOR = 7,
   /**
    * The minor version (major.MINOR.revision) of simdutf being used.
    */
-  SIMDUTF_VERSION_MINOR = 6,
+  SIMDUTF_VERSION_MINOR = 5,
   /**
    * The revision (major.minor.REVISION) of simdutf being used.
    */

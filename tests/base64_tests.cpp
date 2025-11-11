@@ -2,12 +2,54 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <iostream>
-
 #include <memory>
+#include <tuple>
+
 #include <tests/helpers/random_int.h>
 #include <tests/helpers/test.h>
+#include <vector>
+
+// Return the length of the prefix that contains count base64 characters.
+// Thus, if count is 3, the function returns the length of the prefix
+// that contains 3 base64 characters. Padding characters are counted.
+size_t prefix_length_base64_index(size_t count, simdutf::base64_options options,
+                                  const char *input, size_t length) {
+  size_t i = 0;
+  while (i < length && simdutf::base64_ignorable(input[i], options)) {
+    i++;
+  }
+  if (count == 0) {
+    return i; // duh!
+  }
+  for (; i < length; i++) {
+    if (simdutf::base64_ignorable(input[i], options)) {
+      continue;
+    }
+    // We have a base64 character or a padding character.
+    count--;
+    if (count == 0) {
+      return i + 1;
+    }
+  }
+  return -1; // should never happen
+}
+
+template <typename char_type>
+size_t length_without_empty_tail(
+    const std::vector<char_type> &input,
+    simdutf::base64_options options = simdutf::base64_options::base64_default) {
+  if (input.size() == 0) {
+    return 0;
+  }
+  size_t i = input.size();
+  while (i > 0 && simdutf::base64_ignorable(input[i - 1], options)) {
+    i--;
+  }
+  return i;
+}
 
 // We may disable base64url tests by commenting out this next line.
 #define SIMDUTF_BASE64URL_TESTS 1
@@ -54,12 +96,26 @@ constexpr uint8_t to_base64url_value[] = {
     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
     255};
+
+template <typename char_type> bool is_space(char_type c) {
+  const static std::array<char_type, 5> space = {' ', '\t', '\n', '\r', '\f'};
+  return std::find(space.begin(), space.end(), c) != space.end();
+}
+
+template <typename char_type> bool is_non_base64_space(char_type c) {
+  return uint8_t(c) >= 128 || to_base64_value[uint8_t(c)] == 255;
+}
+
+template <typename char_type> bool is_non_base64_url_space(char_type c) {
+  return uint8_t(c) >= 128 || to_base64url_value[uint8_t(c)] == 255;
+}
+
 template <typename char_type>
 size_t add_space(std::vector<char_type> &v, std::mt19937 &gen) {
-  const static std::array<char_type, 4> space = {' ', '\t', '\n', '\r'};
+  const static std::array<char_type, 5> space = {' ', '\t', '\n', '\r', '\f'};
   std::uniform_int_distribution<int> index_dist(0, v.size());
   size_t i = index_dist(gen);
-  std::uniform_int_distribution<int> char_dist(0, 3);
+  std::uniform_int_distribution<int> char_dist(0, space.size() - 1);
   v.insert(v.begin() + i, space[char_dist(gen)]);
   return i;
 }
@@ -105,8 +161,39 @@ std::vector<char_type> add_simple_spaces(std::vector<char_type> &v,
   return result;
 }
 
+std::string add_simple_spaces(const std::string &v, std::mt19937 &gen,
+                              size_t number_of_spaces) {
+  // If there are no spaces to add or the vector is empty, return
+  if (number_of_spaces == 0) {
+    return v;
+  }
+
+  // Generate unique random positions
+  std::vector<bool> positions(v.size() + number_of_spaces, false);
+  std::uniform_int_distribution<size_t> dist(0, positions.size() - 1);
+  for (size_t i = 0; i < number_of_spaces; ++i) {
+    size_t pos = dist(gen);
+    while (positions[pos]) {
+      pos = dist(gen);
+    }
+    positions[pos] = true;
+  }
+  std::string result;
+  result.resize(v.size() + number_of_spaces);
+  int pos = 0;
+  for (size_t i = 0; i < v.size() + number_of_spaces; ++i) {
+    if (positions[i]) {
+      result[i] = ' ';
+    } else {
+      result[i] = v[pos++];
+    }
+  }
+  return result;
+}
+
 template <typename char_type>
-size_t add_garbage(std::vector<char_type> &v, std::mt19937 &gen) {
+size_t add_garbage(std::vector<char_type> &v, std::mt19937 &gen,
+                   const uint8_t *table) {
   auto equal_sign = std::find(v.begin(), v.end(), '=');
   size_t len = v.size();
   if (equal_sign != v.end()) {
@@ -116,16 +203,1333 @@ size_t add_garbage(std::vector<char_type> &v, std::mt19937 &gen) {
   size_t i = index_dist(gen);
   std::uniform_int_distribution<int> char_dist(
       0, (1 << (sizeof(char_type) * 8)) - 1);
-  uint8_t c = char_dist(gen);
-  while (uint8_t(c) == c && to_base64_value[uint8_t(c)] != 255) {
+  char_type c = char_dist(gen);
+  while ((uint8_t(c) == c && table[uint8_t(c)] != 255) || c == '=') {
     c = char_dist(gen);
   }
   v.insert(v.begin() + i, c);
   return i;
 }
 
+// https://github.com/tc39/test262/blob/f0dc15c6c7ec095ba3caf3acc0f8665394665841/test/built-ins/Uint8Array/fromBase64/last-chunk-invalid.js
+TEST(tc39_illegal_padded_chunks) {
+  std::string test_cases[] = {
+      "=",         "==",        "===",       "====",     "=====",   "A=",
+      "A==",       "A===",      "A====",     "A=====",   "AA====",  "AA=====",
+      "AAA==",     "AAA===",    "AAA====",   "AAA=====", "AAAA=",   "AAAA==",
+      "AAAA===",   "AAAA====",  "AAAA=====", "AAAAA=",   "AAAAA==", "AAAAA===",
+      "AAAAA====", "AAAAA====="};
+  std::mt19937 gen((std::mt19937::result_type)(seed));
+  for (const std::string &input : test_cases) {
+    std::vector<uint8_t> back(255);
+    size_t len = back.size();
+    for (auto option :
+         {simdutf::last_chunk_handling_options::strict,
+          simdutf::last_chunk_handling_options::loose,
+          simdutf::last_chunk_handling_options::stop_before_partial}) {
+      auto r = simdutf::base64_to_binary_safe(
+          input.data(), input.size(), reinterpret_cast<char *>(back.data()),
+          len, simdutf::base64_default, option, true);
+      ASSERT_FALSE(r.error == simdutf::error_code::SUCCESS);
+      ASSERT_FALSE(r.error == simdutf::error_code::OUTPUT_BUFFER_TOO_SMALL);
+    }
+  }
+}
+
+// From Node.js tests:
+TEST(issue_node_anything_goes) {
+
+  auto test =
+      [](const std::string &input, const std::string &expected,
+         simdutf::base64_options options =
+             simdutf::base64_options::base64_default_or_url_accept_garbage) {
+        size_t buflen = simdutf::maximal_binary_length_from_base64(
+            input.data(), input.size());
+        std::vector<char> back(buflen);
+        size_t written_len = buflen;
+        auto result = simdutf::base64_to_binary_safe(
+            input.data(), input.length(), back.data(), written_len,
+            simdutf::base64_default_or_url_accept_garbage);
+        ASSERT_EQUAL(result.error, simdutf::error_code::SUCCESS);
+        ASSERT_EQUAL(written_len, expected.size());
+        ASSERT_TRUE(std::equal(back.begin(), back.begin() + written_len,
+                               expected.begin()));
+      };
+  test("YQ", "a");
+  test("Y Q", "a");
+  test("Y Q ", "a");
+  test(" Y Q", "a");
+  test("Y Q==", "a");
+  test("YQ ==", "a");
+  test("YQ == junk", "a");
+  test("YWI", "ab");
+  test("YWI=", "ab");
+  test("YWJj", "abc");
+  test("YWJjZA", "abcd");
+  test("YWJjZA==", "abcd");
+  test("YW Jj ZA ==", "abcd");
+  test("YWJjZGU=", "abcde");
+  test("YWJjZGVm", "abcdef");
+  test("Y WJjZGVm", "abcdef");
+  test("YW JjZGVm", "abcdef");
+  test("YWJ jZGVm", "abcdef");
+  test("YWJj ZGVm", "abcdef");
+  test("Y W J j Z G V m", "abcdef");
+  test("Y   W\n JjZ \nG Vm", "abcdef");
+  test("rMeTqoNvw-M_dQ", "\xac\xc7\x93\xaa\x83\x6f\xc3\xe3\x3f\x75");
+
+  const char *text =
+      "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do "
+      "eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut "
+      "enim ad minim veniam, quis nostrud exercitation ullamco laboris "
+      "nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in "
+      "reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla "
+      "pariatur. Excepteur sint occaecat cupidatat non proident, sunt in "
+      "culpa qui officia deserunt mollit anim id est laborum.";
+
+  test("TG9yZW0gaXBzdW0gZG9sb3Igc2l0IGFtZXQsIGNvbnNlY3RldHVyIGFkaXBpc2Npbmcg"
+       "ZWxpdCwgc2VkIGRvIGVpdXNtb2QgdGVtcG9yIGluY2lkaWR1bnQgdXQgbGFib3JlIGV0"
+       "IGRvbG9yZSBtYWduYSBhbGlxdWEuIFV0IGVuaW0gYWQgbWluaW0gdmVuaWFtLCBxdWlz"
+       "IG5vc3RydWQgZXhlcmNpdGF0aW9uIHVsbGFtY28gbGFib3JpcyBuaXNpIHV0IGFsaXF1"
+       "aXAgZXggZWEgY29tbW9kbyBjb25zZXF1YXQuIER1aXMgYXV0ZSBpcnVyZSBkb2xvciBp"
+       "biByZXByZWhlbmRlcml0IGluIHZvbHVwdGF0ZSB2ZWxpdCBlc3NlIGNpbGx1bSBkb2xv"
+       "cmUgZXUgZnVnaWF0IG51bGxhIHBhcmlhdHVyLiBFeGNlcHRldXIgc2ludCBvY2NhZWNh"
+       "dCBjdXBpZGF0YXQgbm9uIHByb2lkZW50LCBzdW50IGluIGN1bHBhIHF1aSBvZmZpY2lh"
+       "IGRlc2VydW50IG1vbGxpdCBhbmltIGlkIGVzdCBsYWJvcnVtLg==",
+       text);
+
+  test("TG9yZW0gaXBzdW0gZG9sb3Igc2l0IGFtZXQsIGNvbnNlY3RldHVyIGFkaXBpc2Npbmcg"
+       "ZWxpdCwgc2VkIGRvIGVpdXNtb2QgdGVtcG9yIGluY2lkaWR1bnQgdXQgbGFib3JlIGV0"
+       "IGRvbG9yZSBtYWduYSBhbGlxdWEuIFV0IGVuaW0gYWQgbWluaW0gdmVuaWFtLCBxdWlz"
+       "IG5vc3RydWQgZXhlcmNpdGF0aW9uIHVsbGFtY28gbGFib3JpcyBuaXNpIHV0IGFsaXF1"
+       "aXAgZXggZWEgY29tbW9kbyBjb25zZXF1YXQuIER1aXMgYXV0ZSBpcnVyZSBkb2xvciBp"
+       "biByZXByZWhlbmRlcml0IGluIHZvbHVwdGF0ZSB2ZWxpdCBlc3NlIGNpbGx1bSBkb2xv"
+       "cmUgZXUgZnVnaWF0IG51bGxhIHBhcmlhdHVyLiBFeGNlcHRldXIgc2ludCBvY2NhZWNh"
+       "dCBjdXBpZGF0YXQgbm9uIHByb2lkZW50LCBzdW50IGluIGN1bHBhIHF1aSBvZmZpY2lh"
+       "IGRlc2VydW50IG1vbGxpdCBhbmltIGlkIGVzdCBsYWJvcnVtLg",
+       text);
+
+  test("TG9yZW0gaXBzdW0gZG9sb3Igc2l0IGFtZXQsIGNvbnNlY3RldHVyIGFkaXBpc2Npbmcg\n"
+       "ZWxpdCwgc2VkIGRvIGVpdXNtb2QgdGVtcG9yIGluY2lkaWR1bnQgdXQgbGFib3JlIGV0\n"
+       "IGRvbG9yZSBtYWduYSBhbGlxdWEuIFV0IGVuaW0gYWQgbWluaW0gdmVuaWFtLCBxdWlz\n"
+       "IG5vc3RydWQgZXhlcmNpdGF0aW9uIHVsbGFtY28gbGFib3JpcyBuaXNpIHV0IGFsaXF1\n"
+       "aXAgZXggZWEgY29tbW9kbyBjb25zZXF1YXQuIER1aXMgYXV0ZSBpcnVyZSBkb2xvciBp\n"
+       "biByZXByZWhlbmRlcml0IGluIHZvbHVwdGF0ZSB2ZWxpdCBlc3NlIGNpbGx1bSBkb2xv\n"
+       "cmUgZXUgZnVnaWF0IG51bGxhIHBhcmlhdHVyLiBFeGNlcHRldXIgc2ludCBvY2NhZWNh\n"
+       "dCBjdXBpZGF0YXQgbm9uIHByb2lkZW50LCBzdW50IGluIGN1bHBhIHF1aSBvZmZpY2lh\n"
+       "IGRlc2VydW50IG1vbGxpdCBhbmltIGlkIGVzdCBsYWJvcnVtLg==",
+       text);
+
+  test("TG9yZW0gaXBzdW0gZG9sb3Igc2l0IGFtZXQsIGNvbnNlY3RldHVyIGFkaXBpc2Npbmcg\n"
+       "ZWxpdCwgc2VkIGRvIGVpdXNtb2QgdGVtcG9yIGluY2lkaWR1bnQgdXQgbGFib3JlIGV0\n"
+       "IGRvbG9yZSBtYWduYSBhbGlxdWEuIFV0IGVuaW0gYWQgbWluaW0gdmVuaWFtLCBxdWlz\n"
+       "IG5vc3RydWQgZXhlcmNpdGF0aW9uIHVsbGFtY28gbGFib3JpcyBuaXNpIHV0IGFsaXF1\n"
+       "aXAgZXggZWEgY29tbW9kbyBjb25zZXF1YXQuIER1aXMgYXV0ZSBpcnVyZSBkb2xvciBp\n"
+       "biByZXByZWhlbmRlcml0IGluIHZvbHVwdGF0ZSB2ZWxpdCBlc3NlIGNpbGx1bSBkb2xv\n"
+       "cmUgZXUgZnVnaWF0IG51bGxhIHBhcmlhdHVyLiBFeGNlcHRldXIgc2ludCBvY2NhZWNh\n"
+       "dCBjdXBpZGF0YXQgbm9uIHByb2lkZW50LCBzdW50IGluIGN1bHBhIHF1aSBvZmZpY2lh\n"
+       "IGRlc2VydW50IG1vbGxpdCBhbmltIGlkIGVzdCBsYWJvcnVtLg",
+       text);
+}
+
+TEST(issue_dash) {
+  const std::string input = "Iw==";
+  std::vector<char> back(1);
+  size_t len = back.size();
+  auto r = simdutf::base64_to_binary_safe(input.data(), input.size(),
+                                          back.data(), len);
+  ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
+  ASSERT_EQUAL(r.count, 4);
+  ASSERT_EQUAL(len, 1);
+  ASSERT_EQUAL(back[0], '#');
+}
+
+TEST(issue_dash_partial) {
+  const std::string input = "Iw==";
+  std::vector<char> back(1);
+  size_t len = back.size();
+  auto r = simdutf::base64_to_binary_safe(
+      input.data(), input.size(), back.data(), len, simdutf::base64_default,
+      simdutf::last_chunk_handling_options::stop_before_partial);
+  ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
+  ASSERT_EQUAL(r.count, 4);
+  ASSERT_EQUAL(len, 1);
+  ASSERT_EQUAL(back[0], '#');
+}
+
+// https://github.com/tc39/test262
+TEST(tc39_4a) {
+  std::pair<std::string, std::vector<uint8_t>> test_cases[] = {
+      {"ZXhhZg==", {101, 120, 97, 102}},
+      {"ZXhhZg", {101, 120, 97}},
+      {"ZXhhZh==", {101, 120, 97, 102}},
+      {"ZXhhZh", {101, 120, 97}},
+      {"ZXhhZg=", {101, 120, 97}}};
+  for (const auto tc : test_cases) {
+    const std::string &input = tc.first;
+    const std::vector<uint8_t> &expected = tc.second;
+    std::vector<uint8_t> back(expected.size(), 255);
+    size_t len = back.size();
+    auto r = simdutf::base64_to_binary_safe(
+        input.data(), input.size(), reinterpret_cast<char *>(back.data()), len,
+        simdutf::base64_default,
+        simdutf::last_chunk_handling_options::stop_before_partial, true);
+    ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
+    ASSERT_EQUAL(len, expected.size());
+    ASSERT_EQUAL(back, expected);
+  }
+}
+
+// https://github.com/tc39/test262
+TEST(tc39_4b) {
+  std::pair<std::string, std::vector<uint8_t>> test_cases[] = {
+      {"ZXhhZg==", {101, 120, 97, 102}},
+      {"ZXhhZg", {101, 120, 97}},
+      {"ZXhhZh==", {101, 120, 97, 102}},
+      {"ZXhhZh", {101, 120, 97}},
+      {"ZXhhZg=", {101, 120, 97}}};
+  for (const auto tc : test_cases) {
+    const std::string &input = tc.first;
+    const std::vector<uint8_t> &expected = tc.second;
+    std::vector<uint8_t> back(expected.size(), 255);
+    size_t len = back.size();
+    auto r = simdutf::base64_to_binary_safe(
+        input.data(), input.size(), reinterpret_cast<char *>(back.data()), len,
+        simdutf::base64_default,
+        simdutf::last_chunk_handling_options::stop_before_partial, true);
+    ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
+    ASSERT_EQUAL(len, expected.size());
+    ASSERT_EQUAL(back, expected);
+  }
+}
+
+// https://github.com/tc39/test262
+TEST(tc39_3a) {
+  const std::string input = "ZXhhZg===";
+  std::vector<uint8_t> back = {255, 255, 255, 255, 255};
+
+  size_t len = back.size();
+  auto r = simdutf::base64_to_binary_safe(
+      input.data(), input.size(), reinterpret_cast<char *>(back.data()), len,
+      simdutf::base64_default,
+      simdutf::last_chunk_handling_options::stop_before_partial, true);
+  ASSERT_TRUE(r.error != simdutf::error_code::SUCCESS);
+}
+
+// https://github.com/tc39/test262
+TEST(tc39_3b) {
+  const std::string input = "ZXhhZg===";
+  std::vector<uint8_t> back = {255, 255, 255, 255, 255};
+
+  size_t len = back.size();
+  auto r = implementation.base64_to_binary(
+      input.data(), input.size(), reinterpret_cast<char *>(back.data()),
+      simdutf::base64_default,
+      simdutf::last_chunk_handling_options::stop_before_partial);
+  ASSERT_TRUE(r.error != simdutf::error_code::SUCCESS);
+}
+
+// https://github.com/tc39/test262
+TEST(tc39_1a) {
+  const std::string input = "Zm9vYmE=";
+  std::vector<uint8_t> back = {255, 255, 255, 255, 255};
+  std::vector<uint8_t> expected = {102, 111, 111, 98, 97};
+
+  size_t len = back.size();
+  auto r = simdutf::base64_to_binary_safe(
+      input.data(), input.size(), reinterpret_cast<char *>(back.data()), len,
+      simdutf::base64_default,
+      simdutf::last_chunk_handling_options::stop_before_partial, true);
+  ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
+  ASSERT_EQUAL(r.count, 8);
+  ASSERT_EQUAL(len, 5);
+  ASSERT_EQUAL(back, expected);
+}
+
+// https://github.com/tc39/test262
+TEST(tc39_1b) {
+  const std::string input = "Zm9vYmE=";
+  std::vector<uint8_t> back = {255, 255, 255, 255, 255};
+  std::vector<uint8_t> expected = {102, 111, 111, 98, 97};
+
+  size_t len = back.size();
+  auto r = simdutf::base64_to_binary_safe(
+      input.data(), input.size(), reinterpret_cast<char *>(back.data()), len,
+      simdutf::base64_default,
+      simdutf::last_chunk_handling_options::stop_before_partial, true);
+  ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
+  ASSERT_EQUAL(r.count, 8);
+  ASSERT_EQUAL(len, 5);
+  ASSERT_EQUAL(back, expected);
+}
+
+// https://github.com/tc39/test262
+TEST(tc39_2) {
+  const std::string input = "Zm9vYmE";
+  std::vector<uint8_t> back = {255, 255, 255, 255, 255};
+  std::vector<uint8_t> expected = {102, 111, 111, 255, 255};
+
+  size_t len = back.size();
+  auto r = simdutf::base64_to_binary_safe(
+      input.data(), input.size(), reinterpret_cast<char *>(back.data()), len,
+      simdutf::base64_default,
+      simdutf::last_chunk_handling_options::stop_before_partial, true);
+  ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
+  ASSERT_EQUAL(r.count, 4);
+  ASSERT_EQUAL(len, 3);
+  ASSERT_EQUAL(back, expected);
+}
+
+// https://github.com/tc39/test262/blob/f0dc15c6c7ec095ba3caf3acc0f8665394665841/test/built-ins/Uint8Array/fromBase64/last-chunk-invalid.js
+TEST(tc39_illegal_padded_chunks_unsafe) {
+  std::string test_cases[] = {
+      "=",         "==",        "===",       "====",     "=====",   "A=",
+      "A==",       "A===",      "A====",     "A=====",   "AA====",  "AA=====",
+      "AAA==",     "AAA===",    "AAA====",   "AAA=====", "AAAA=",   "AAAA==",
+      "AAAA===",   "AAAA====",  "AAAA=====", "AAAAA=",   "AAAAA==", "AAAAA===",
+      "AAAAA====", "AAAAA====="};
+  std::mt19937 gen((std::mt19937::result_type)(seed));
+  for (const std::string &input : test_cases) {
+    std::vector<uint8_t> back(255);
+    size_t len = back.size();
+    for (auto option :
+         {simdutf::last_chunk_handling_options::strict,
+          simdutf::last_chunk_handling_options::loose,
+          simdutf::last_chunk_handling_options::stop_before_partial}) {
+      auto r = simdutf::base64_to_binary(input.data(), input.size(),
+                                         reinterpret_cast<char *>(back.data()),
+                                         simdutf::base64_default, option);
+      ASSERT_FALSE(r.error == simdutf::error_code::SUCCESS);
+    }
+  }
+  std::string base(128, 'A');
+  for (const std::string &input_orig : test_cases) {
+    std::string input = base + input_orig;
+
+    std::vector<uint8_t> back(255);
+    size_t len = back.size();
+    for (auto option :
+         {simdutf::last_chunk_handling_options::strict,
+          simdutf::last_chunk_handling_options::loose,
+          simdutf::last_chunk_handling_options::stop_before_partial}) {
+      auto r = simdutf::base64_to_binary(input.data(), input.size(),
+                                         reinterpret_cast<char *>(back.data()),
+                                         simdutf::base64_default, option);
+      ASSERT_FALSE(r.error == simdutf::error_code::SUCCESS);
+    }
+  }
+  for (const std::string &input_orig : test_cases) {
+    std::string input = base + input_orig;
+    input = add_simple_spaces(input, gen, 5 + 2 * input.size());
+    std::vector<uint8_t> back(255);
+    size_t len = back.size();
+    for (auto option :
+         {simdutf::last_chunk_handling_options::strict,
+          simdutf::last_chunk_handling_options::loose,
+          simdutf::last_chunk_handling_options::stop_before_partial}) {
+      auto r = simdutf::base64_to_binary(input.data(), input.size(),
+                                         reinterpret_cast<char *>(back.data()),
+                                         simdutf::base64_default, option);
+      ASSERT_FALSE(r.error == simdutf::error_code::SUCCESS);
+    }
+  }
+}
+
+auto verify_lines = [](const char *c, int N, int line_length) {
+  int current_line_length = 0; // Track the length of the current line
+  // Iterate through the string
+  for (int i = 0; i < N; ++i) {
+    if (c[i] == '\n') {
+      // Check if a non-final line has incorrect length
+      if (current_line_length != line_length) {
+        std::cerr << "A non-final line has incorrect length "
+                  << current_line_length << " != " << line_length << "\n";
+        std::cerr << std::string(c, N) << "\n";
+        return false;
+      }
+      current_line_length = 0; // Reset for the next line
+      continue;
+    }
+
+    current_line_length++;
+    // Check if the current line exceeds the allowed length
+    if (current_line_length > line_length) {
+      std::cerr << "A line exceeds the allowed length " << current_line_length
+                << " > " << line_length << "\n";
+      std::cerr << std::string(c, N) << "\n";
+      return false;
+    }
+  }
+  return true;
+};
+
+TEST(with_lines_pauldreik) {
+  size_t line_length = 5;
+  size_t max_length = 2048;
+  std::vector<char> source(max_length, 'f');
+  std::vector<char> back(max_length);
+  std::vector<char> buffer;
+  for (auto selected_option : {simdutf::base64_options::base64_url,
+                               simdutf::base64_options::base64_default}) {
+    for (size_t line_length = 5; line_length < 128; line_length += 7) {
+      for (size_t length = 1; length < 2048; length += 17) {
+        buffer.resize(simdutf::base64_length_from_binary_with_lines(
+            length, selected_option, line_length));
+        size_t size = implementation.binary_to_base64_with_lines(
+            source.data(), length, buffer.data(), line_length, selected_option);
+        auto r = implementation.base64_to_binary(buffer.data(), buffer.size(),
+                                                 back.data(), selected_option);
+        ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
+        ASSERT_TRUE(
+            std::equal(back.begin(), back.begin() + length, source.begin()));
+        ASSERT_EQUAL(size, buffer.size());
+        ASSERT_TRUE(verify_lines(buffer.data(), buffer.size(), line_length));
+      }
+    }
+  }
+}
+
+TEST(with_lines) {
+
+  for (size_t line_length : {4, 64, 76, 80, 128}) {
+    for (size_t len = 0; len < 2048; len += 17) {
+      std::vector<char> source(len, 0);
+      std::vector<char> buffer;
+      buffer.resize(simdutf::base64_length_from_binary_with_lines(
+          len, simdutf::base64_default, line_length));
+      std::mt19937 gen((std::mt19937::result_type)(seed));
+      std::uniform_int_distribution<int> byte_generator{0, 255};
+      for (size_t trial = 0; trial < 2; trial++) {
+        for (size_t i = 0; i < len; i++) {
+          source[i] = byte_generator(gen);
+        }
+        size_t size = implementation.binary_to_base64_with_lines(
+            source.data(), source.size(), buffer.data(), line_length);
+        ASSERT_EQUAL(size, buffer.size());
+        buffer.resize(size); // unnecessary
+        ASSERT_TRUE(verify_lines(buffer.data(), buffer.size(), line_length));
+        std::vector<char> back(simdutf::maximal_binary_length_from_base64(
+            buffer.data(), buffer.size()));
+        auto option = simdutf::last_chunk_handling_options::stop_before_partial;
+
+        simdutf::full_result r = implementation.base64_to_binary_details(
+            buffer.data(), buffer.size(), back.data(), simdutf::base64_default,
+            option);
+        ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
+        const size_t expected_output_length = len;
+        const size_t expected_input_length = prefix_length_base64_index(
+            (expected_output_length + 2) / 3 * 4, simdutf::base64_default,
+            buffer.data(), buffer.size());
+        ASSERT_EQUAL(r.output_count, expected_output_length);
+        ASSERT_TRUE(std::equal(back.begin(),
+                               back.begin() + expected_output_length,
+                               source.begin()));
+        ASSERT_EQUAL(r.input_count, expected_input_length);
+      }
+    }
+  }
+}
+
+// stop-before-partial should behave like so:
+// 1. if the last chunk is not a multiple of 4, we should stop before the last
+//    chunk
+// 2. if the last chunk is a multiple of 4 (counting padding), we should
+// decode it
+// 3. If there is a padding character appearing in the last chunk where we have
+//    fewer than 2 base64 characters, we should return an error.
+//
+// https://tc39.es/proposal-arraybuffer-base64/spec/#sec-frombase64
+//
+TEST(partial_should_decode_up_to_last_chunk) {
+  for (size_t len = 0; len < 2048; len++) {
+    std::vector<char> source(len, 0);
+    std::vector<char> buffer;
+    buffer.resize(simdutf::base64_length_from_binary(len));
+    std::mt19937 gen((std::mt19937::result_type)(seed));
+    std::uniform_int_distribution<int> byte_generator{0, 255};
+    for (size_t trial = 0; trial < 10; trial++) {
+      for (size_t i = 0; i < len; i++) {
+        source[i] = byte_generator(gen);
+      }
+      buffer.resize(simdutf::base64_length_from_binary(len));
+      size_t size = implementation.binary_to_base64(
+          source.data(), source.size(), buffer.data());
+      ASSERT_EQUAL(size, buffer.size());
+      buffer.resize(size); // unnecessary
+      add_simple_spaces(buffer, gen, 5 + 2 * len);
+      std::vector<char> back(simdutf::maximal_binary_length_from_base64(
+          buffer.data(), buffer.size()));
+      auto option = simdutf::last_chunk_handling_options::stop_before_partial;
+
+      simdutf::full_result r = implementation.base64_to_binary_details(
+          buffer.data(), buffer.size(), back.data(), simdutf::base64_default,
+          option);
+      ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
+      const size_t expected_output_length = len;
+      const size_t expected_input_length = prefix_length_base64_index(
+          (expected_output_length + 2) / 3 * 4, simdutf::base64_default,
+          buffer.data(), buffer.size());
+      ASSERT_EQUAL(r.output_count, expected_output_length);
+      ASSERT_TRUE(std::equal(
+          back.begin(), back.begin() + expected_output_length, source.begin()));
+      // If there is just zero one character in the last chunk, and there is a
+      // padding character, we should return an error.
+      if (buffer.size() > 0 && len > 0 && len % 3 != 0) {
+        // We have a last chunk that is not a multiple of 4.
+        // So there are padding characters.
+        size_t to_remove = 0;
+        // We want to leave just one character in the last chunk
+        // This should cause an error.
+        if (len % 3 == 1) {
+          // last chunk is 2
+          to_remove = 1;
+        } else if (len % 3 == 2) {
+          // last chunk is 3
+          to_remove = 2;
+        }
+        for (size_t i = buffer.size() - 1;; i--) {
+          if (simdutf::base64_valid(buffer[i], simdutf::base64_default)) {
+            buffer[i] = ' ';
+            to_remove--;
+            if (to_remove == 0) {
+              break;
+            }
+          }
+        }
+        r = implementation.base64_to_binary_details(
+            buffer.data(), buffer.size(), back.data(), simdutf::base64_default,
+            option);
+        ASSERT_EQUAL(r.error, simdutf::error_code::BASE64_INPUT_REMAINDER);
+        // Next, we empty the last chunk
+        for (size_t i = buffer.size() - 1;; i--) {
+          if (simdutf::base64_valid(buffer[i], simdutf::base64_default)) {
+            buffer[i] = ' ';
+            break;
+          }
+        }
+        r = implementation.base64_to_binary_details(
+            buffer.data(), buffer.size(), back.data(), simdutf::base64_default,
+            option);
+        ASSERT_EQUAL(r.error, simdutf::error_code::INVALID_BASE64_CHARACTER);
+      }
+    }
+  }
+}
+
+TEST(partial_should_decode_four_wise_chunks) {
+  // 37 bytes = 4 * 3 + 1
+  const std::string input = "X8vzLrvHmZgncicZDnXdVZkktaYFDvi41fA2A";
+  std::vector<char> buffer;
+  buffer.resize(input.size() / 4 * 3);
+  auto option = simdutf::last_chunk_handling_options::stop_before_partial;
+  auto r = implementation.base64_to_binary_details(
+      input.data(), input.size(), buffer.data(), simdutf::base64_default,
+      option);
+  ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
+  ASSERT_TRUE(r.input_count == 36);
+  ASSERT_TRUE(r.output_count == 27);
+}
+
+TEST(stop_before_partial_one_char) {
+  std::vector<char> base64(5463, 0x20);
+  base64.back() = 0x38; // this is the number 8 (a valid base64 character)
+  std::vector<char> back(0);
+  // with stop_before_partial, we should stop before the last character
+  // and not decode it. There should be no error.
+  // https://tc39.es/proposal-arraybuffer-base64/spec/#sec-frombase64
+  simdutf::result r = implementation.base64_to_binary(
+      base64.data(), base64.size(), back.data(), simdutf::base64_default,
+      simdutf::last_chunk_handling_options::stop_before_partial);
+  ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
+  ASSERT_EQUAL(r.count, 0);
+  size_t buflen = back.size();
+  ASSERT_EQUAL(buflen, 0);
+  r = simdutf::base64_to_binary_safe(
+      base64.data(), base64.size(), back.data(), buflen,
+      simdutf::base64_default,
+      simdutf::last_chunk_handling_options::stop_before_partial);
+  ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
+  ASSERT_EQUAL(buflen, 0);
+  back.resize(base64.size());
+  buflen = back.size();
+  r = simdutf::base64_to_binary_safe(
+      base64.data(), base64.size(), back.data(), buflen,
+      simdutf::base64_default,
+      simdutf::last_chunk_handling_options::stop_before_partial);
+  ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
+  ASSERT_EQUAL(buflen, 0);
+}
+
+TEST(hybrid_decoding) {
+  std::vector<std::pair<std::string, std::vector<uint8_t>>> test_data = {
+      {"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA__--_"
+       "--"
+       "_--__"
+       "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+       {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0xff, 0xff, 0xbe, 0xff, 0xef, 0xbf, 0xfb, 0xef, 0xff, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+      {"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA__-+_"
+       "--"
+       "_--/"
+       "_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+       {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0xff, 0xff, 0xbe, 0xff, 0xef, 0xbf, 0xfb, 0xef, 0xff, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+      {"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA__-+_"
+       "--"
+       " / "
+       "--/_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+       {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0xff, 0xff, 0xbe, 0xff, 0xef, 0xbf, 0xfb, 0xef, 0xff, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+      {"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//-+/"
+       "--/--/"
+       "_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+       {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0xff, 0xff, 0xbe, 0xff, 0xef, 0xbf, 0xfb, 0xef, 0xff, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+
+  };
+  for (const auto &test : test_data) {
+    const std::string &base64 = test.first;
+    const std::vector<uint8_t> &expected = test.second;
+    std::vector<uint8_t> decoded(simdutf::maximal_binary_length_from_base64(
+        base64.data(), base64.size()));
+    auto r = implementation.base64_to_binary(
+        base64.data(), base64.size(), reinterpret_cast<char *>(decoded.data()),
+        simdutf::base64_default_or_url);
+    ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
+    ASSERT_EQUAL(r.count, expected.size());
+    decoded.resize(r.count);
+    ASSERT_EQUAL(decoded, expected);
+  }
+}
+
+TEST(roundtrip_base64_with_spaces) {
+  for (size_t len = 0; len < 2048; len++) {
+    std::vector<char> source(len, 0);
+    std::vector<char> buffer;
+    buffer.resize(simdutf::base64_length_from_binary(len));
+    std::mt19937 gen((std::mt19937::result_type)(seed));
+    std::uniform_int_distribution<int> byte_generator{0, 255};
+    for (size_t trial = 0; trial < 10; trial++) {
+      for (size_t i = 0; i < len; i++) {
+        source[i] = 'a' + i % ('z' - 'a'); // byte_generator(gen);
+      }
+      size_t size = implementation.binary_to_base64(
+          source.data(), source.size(), buffer.data());
+      buffer.resize(size);
+      for (size_t i = 0; i < 5; i++) {
+        add_space(buffer, gen);
+      }
+      std::vector<char> back(simdutf::maximal_binary_length_from_base64(
+          buffer.data(), buffer.size()));
+      for (auto option :
+           {simdutf::last_chunk_handling_options::strict,
+            simdutf::last_chunk_handling_options::loose,
+            simdutf::last_chunk_handling_options::stop_before_partial}) {
+        if (option ==
+                simdutf::last_chunk_handling_options::stop_before_partial &&
+            len % 3 != 0) {
+          continue;
+        }
+        simdutf::result r = implementation.base64_to_binary(
+            buffer.data(), buffer.size(), back.data(), simdutf::base64_default,
+            option);
+        ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
+        ASSERT_EQUAL(r.count, len);
+        ASSERT_BYTES_EQUAL(source, back, len);
+      }
+      for (auto option :
+           {simdutf::last_chunk_handling_options::strict,
+            simdutf::last_chunk_handling_options::loose,
+            simdutf::last_chunk_handling_options::stop_before_partial}) {
+        if (option ==
+                simdutf::last_chunk_handling_options::stop_before_partial &&
+            len % 3 != 0) {
+          continue;
+        }
+        size_t back_length = back.size();
+        auto r = simdutf::base64_to_binary_safe(
+            buffer.data(), buffer.size(), back.data(), back_length,
+            simdutf::base64_default, option);
+        ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
+        ASSERT_EQUAL(back_length, len);
+
+        for (size_t i = r.count; i < buffer.size(); i++) {
+          ASSERT_TRUE(is_space(buffer[i]));
+        }
+        ASSERT_TRUE(std::equal(back.begin(), back.begin() + back_length,
+                               source.begin()));
+      }
+    }
+  }
+}
+
+TEST(roundtrip_base64_with_garbage) {
+  for (size_t len = 0; len < 2048; len++) {
+    std::vector<char> source(len, 0);
+    std::vector<char> buffer;
+    buffer.resize(simdutf::base64_length_from_binary(len));
+    std::mt19937 gen((std::mt19937::result_type)(seed));
+    std::uniform_int_distribution<int> byte_generator{0, 255};
+    for (size_t trial = 0; trial < 10; trial++) {
+      for (size_t i = 0; i < len; i++) {
+        source[i] = byte_generator(gen);
+      }
+      size_t size = implementation.binary_to_base64(
+          source.data(), source.size(), buffer.data());
+      buffer.resize(size);
+      for (size_t i = 0; i < 5; i++) {
+        add_garbage(buffer, gen, to_base64_value);
+      }
+      std::vector<char> back(simdutf::maximal_binary_length_from_base64(
+          buffer.data(), buffer.size()));
+      for (auto option : {simdutf::last_chunk_handling_options::strict,
+                          simdutf::last_chunk_handling_options::loose}) {
+        simdutf::result r = implementation.base64_to_binary(
+            buffer.data(), buffer.size(), back.data(),
+            simdutf::base64_default_accept_garbage, option);
+        ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
+        ASSERT_EQUAL(r.count, len);
+        ASSERT_TRUE(
+            std::equal(back.begin(), back.begin() + len, source.begin()));
+      }
+      for (auto option :
+           {simdutf::last_chunk_handling_options::strict,
+            simdutf::last_chunk_handling_options::loose,
+            simdutf::last_chunk_handling_options::stop_before_partial}) {
+        if (option ==
+                simdutf::last_chunk_handling_options::stop_before_partial &&
+            len % 3 != 0) {
+          continue;
+        }
+        size_t back_length = back.size();
+        auto r = simdutf::base64_to_binary_safe(
+            buffer.data(), buffer.size(), back.data(), back_length,
+            simdutf::base64_default_accept_garbage, option);
+
+        ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
+        ASSERT_EQUAL(back_length, len);
+        for (size_t i = r.count; i < buffer.size(); i++) {
+          ASSERT_TRUE(!simdutf::base64_valid(
+              buffer[i], simdutf::base64_default_accept_garbage));
+        }
+        ASSERT_TRUE(std::equal(back.begin(), back.begin() + back_length,
+                               source.begin()));
+      }
+    }
+  }
+}
+
+TEST(roundtrip_base64_url_with_garbage) {
+  for (size_t len = 0; len < 2048; len++) {
+    std::vector<char> source(len, 0);
+    std::vector<char> buffer;
+    buffer.resize(simdutf::base64_length_from_binary(len));
+    std::mt19937 gen((std::mt19937::result_type)(seed));
+    std::uniform_int_distribution<int> byte_generator{0, 255};
+    for (size_t trial = 0; trial < 10; trial++) {
+      for (size_t i = 0; i < len; i++) {
+        source[i] = byte_generator(gen);
+      }
+      size_t size = implementation.binary_to_base64(
+          source.data(), source.size(), buffer.data(), simdutf::base64_url);
+      buffer.resize(size);
+      for (size_t i = 0; i < 5; i++) {
+        add_garbage(buffer, gen, to_base64url_value);
+      }
+      std::vector<char> back(simdutf::maximal_binary_length_from_base64(
+          buffer.data(), buffer.size()));
+      for (auto option :
+           {simdutf::last_chunk_handling_options::strict,
+            simdutf::last_chunk_handling_options::loose,
+            simdutf::last_chunk_handling_options::stop_before_partial}) {
+        if (option ==
+                simdutf::last_chunk_handling_options::stop_before_partial &&
+            len % 3 != 0) {
+          continue;
+        }
+        simdutf::result r = implementation.base64_to_binary(
+            buffer.data(), buffer.size(), back.data(),
+            simdutf::base64_url_accept_garbage, option);
+        ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
+        ASSERT_EQUAL(r.count, len);
+        ASSERT_TRUE(
+            std::equal(back.begin(), back.begin() + len, source.begin()));
+      }
+      for (auto option :
+           {simdutf::last_chunk_handling_options::strict,
+            simdutf::last_chunk_handling_options::loose,
+            simdutf::last_chunk_handling_options::stop_before_partial}) {
+        if (option ==
+                simdutf::last_chunk_handling_options::stop_before_partial &&
+            len % 3 != 0) {
+          continue;
+        }
+        size_t back_length = back.size();
+        auto r = simdutf::base64_to_binary_safe(
+            buffer.data(), buffer.size(), back.data(), back_length,
+            simdutf::base64_url_accept_garbage, option);
+
+        ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
+        ASSERT_EQUAL(back_length, len);
+
+        if (option ==
+            simdutf::last_chunk_handling_options::stop_before_partial) {
+          for (size_t i = r.count; i < buffer.size(); i++) {
+            ASSERT_TRUE(is_non_base64_url_space(buffer[i]));
+          }
+        } else {
+          ASSERT_EQUAL(r.count, buffer.size());
+        }
+        ASSERT_TRUE(std::equal(back.begin(), back.begin() + back_length,
+                               source.begin()));
+      }
+    }
+  }
+}
+
+TEST(roundtrip_base64_with_lots_of_spaces) {
+  for (size_t len = 0; len < 2048; len++) {
+    std::vector<char> source(len, 0);
+    std::vector<char> buffer;
+    buffer.resize(simdutf::base64_length_from_binary(len));
+    std::mt19937 gen((std::mt19937::result_type)(seed));
+    std::uniform_int_distribution<int> byte_generator{0, 255};
+    for (size_t trial = 0; trial < 10; trial++) {
+      for (size_t i = 0; i < len; i++) {
+        source[i] = byte_generator(gen);
+      }
+      size_t size = implementation.binary_to_base64(
+          source.data(), source.size(), buffer.data());
+      buffer.resize(size);
+      add_simple_spaces(buffer, gen, 5 + 2 * len);
+      std::vector<char> back(simdutf::maximal_binary_length_from_base64(
+          buffer.data(), buffer.size()));
+      for (auto option :
+           {simdutf::last_chunk_handling_options::strict,
+            simdutf::last_chunk_handling_options::loose,
+            simdutf::last_chunk_handling_options::stop_before_partial}) {
+        if (option ==
+                simdutf::last_chunk_handling_options::stop_before_partial &&
+            len % 3 != 0) {
+          continue;
+        }
+        simdutf::result r = implementation.base64_to_binary(
+            buffer.data(), buffer.size(), back.data(), simdutf::base64_default,
+            option);
+        ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
+        ASSERT_EQUAL(r.count, len);
+        ASSERT_TRUE(
+            std::equal(back.begin(), back.begin() + len, source.begin()));
+      }
+      for (auto option :
+           {simdutf::last_chunk_handling_options::strict,
+            simdutf::last_chunk_handling_options::loose,
+            simdutf::last_chunk_handling_options::stop_before_partial}) {
+        if (option ==
+                simdutf::last_chunk_handling_options::stop_before_partial &&
+            len % 3 != 0) {
+          continue;
+        }
+        size_t back_length = back.size();
+        auto r = simdutf::base64_to_binary_safe(
+            buffer.data(), buffer.size(), back.data(), back_length,
+            simdutf::base64_default, option);
+        ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
+        ASSERT_EQUAL(back_length, len);
+
+        if (option ==
+            simdutf::last_chunk_handling_options::stop_before_partial) {
+          for (size_t i = r.count; i < buffer.size(); i++) {
+            ASSERT_TRUE(is_space(buffer[i]));
+          }
+          if (r.count > 0) {
+            ASSERT_TRUE(!is_space(buffer[r.count - 1]));
+          }
+        } else {
+          ASSERT_EQUAL(r.count, buffer.size());
+        }
+        ASSERT_TRUE(std::equal(back.begin(), back.begin() + back_length,
+                               source.begin()));
+      }
+    }
+  }
+}
+
+TEST(roundtrip_base64_with_lots_of_spaces_at_the_end) {
+  std::vector<char> buffer;
+  for (size_t len = 0; len < 2048; len += 10) {
+    std::vector<char> source(len, 0);
+    buffer.clear();
+    buffer.resize(simdutf::base64_length_from_binary(len), '\0');
+    std::mt19937 gen((std::mt19937::result_type)(seed));
+    std::uniform_int_distribution<int> byte_generator{0, 255};
+    for (size_t trial = 0; trial < 10; trial++) {
+      for (size_t i = 0; i < len; i++) {
+        source[i] = byte_generator(gen);
+      }
+      size_t size = implementation.binary_to_base64(
+          source.data(), source.size(), buffer.data());
+      buffer.resize(size);
+      add_simple_spaces(buffer, gen, 5 + 2 * len);
+      std::vector<char> back(simdutf::maximal_binary_length_from_base64(
+          buffer.data(), buffer.size()));
+      buffer.resize(buffer.size() + 65536, ' ');
+      for (auto option :
+           {simdutf::last_chunk_handling_options::strict,
+            simdutf::last_chunk_handling_options::loose,
+            simdutf::last_chunk_handling_options::stop_before_partial}) {
+        if (option ==
+                simdutf::last_chunk_handling_options::stop_before_partial &&
+            len % 3 != 0) {
+          continue;
+        }
+        size_t back_length = back.size();
+        auto r = simdutf::base64_to_binary_safe(
+            buffer.data(), buffer.size(), back.data(), back_length,
+            simdutf::base64_default, option);
+        ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
+        ASSERT_EQUAL(back_length, len);
+        for (size_t i = r.count; i < buffer.size(); i++) {
+          ASSERT_TRUE(is_space(buffer[i]));
+        }
+        ASSERT_TRUE(std::equal(back.begin(), back.begin() + back_length,
+                               source.begin()));
+      }
+    }
+  }
+}
+
+TEST(roundtrip_base64_with_lots_of_spaces_at_the_beginning) {
+  std::vector<char> buffer;
+  for (size_t len = 0; len < 2048; len += 10) {
+    std::vector<char> source(len, 0);
+    buffer.clear();
+    buffer.resize(simdutf::base64_length_from_binary(len), '\0');
+    std::mt19937 gen((std::mt19937::result_type)(seed));
+    std::uniform_int_distribution<int> byte_generator{0, 255};
+    for (size_t trial = 0; trial < 10; trial++) {
+      for (size_t i = 0; i < len; i++) {
+        source[i] = byte_generator(gen);
+      }
+      size_t size = implementation.binary_to_base64(
+          source.data(), source.size(), buffer.data());
+      buffer.resize(size);
+      add_simple_spaces(buffer, gen, 5 + 2 * len);
+      std::vector<char> back(simdutf::maximal_binary_length_from_base64(
+          buffer.data(), buffer.size()));
+      buffer.insert(buffer.begin(), 65536, ' ');
+      for (auto option :
+           {simdutf::last_chunk_handling_options::strict,
+            simdutf::last_chunk_handling_options::loose,
+            simdutf::last_chunk_handling_options::stop_before_partial}) {
+        if (option ==
+                simdutf::last_chunk_handling_options::stop_before_partial &&
+            len % 3 != 0) {
+          continue;
+        }
+        size_t back_length = back.size();
+        auto r = simdutf::base64_to_binary_safe(
+            buffer.data(), buffer.size(), back.data(), back_length,
+            simdutf::base64_default, option);
+        ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
+        ASSERT_EQUAL(back_length, len);
+        for (size_t i = r.count; i < buffer.size(); i++) {
+          ASSERT_TRUE(is_space(buffer[i]));
+        }
+
+        ASSERT_TRUE(std::equal(back.begin(), back.begin() + back_length,
+                               source.begin()));
+      }
+    }
+  }
+}
+
+TEST(base64_decode_just_one_padding_partial_safe) {
+  std::vector<std::tuple<std::string, simdutf::result, size_t>> test_cases = {
+      {"uuuu             uu=", {simdutf::error_code::SUCCESS, 4}, 3},
+      // 5. If char is "=", then If chunkLength < 2, then Let error be a new
+      // SyntaxError exception.
+      {"uuuu             u==",
+       {simdutf::error_code::BASE64_INPUT_REMAINDER, 18},
+       3}, // error
+      {"uuuu             u=",
+       {simdutf::error_code::BASE64_INPUT_REMAINDER, 18},
+       3}, // error
+      {"uuuu             ==",
+       {simdutf::error_code::INVALID_BASE64_CHARACTER, 17},
+       3}, // error
+      {"uuuu             =",
+       {simdutf::error_code::INVALID_BASE64_CHARACTER, 17},
+       3}, // error
+  };
+  std::vector<char> buffer(128);
+  printf("\n");
+  for (auto &p : test_cases) {
+    auto input = std::get<0>(p);
+    auto expected_result = std::get<1>(p);
+    size_t expected_output = std::get<2>(p);
+    printf("input: %s\n", input.c_str());
+    for (auto option : {simdutf::base64_options::base64_default,
+                        simdutf::base64_options::base64_url}) {
+      for (auto chunk_option :
+           {simdutf::last_chunk_handling_options::stop_before_partial}) {
+        for (size_t output = 3; output < buffer.size(); output++) {
+          size_t written = output;
+          auto result = simdutf::base64_to_binary_safe(
+              input.data(), input.size(), buffer.data(), written, option,
+              chunk_option);
+          ASSERT_EQUAL(result.error, expected_result.error);
+          ASSERT_EQUAL(written, expected_output);
+          ASSERT_EQUAL(result.count, expected_result.count);
+        }
+      }
+    }
+  }
+}
+
+// partial decoding will succeed and just decode the first 3 bytes, even if we
+// have ample output memory.
+TEST(base64_decode_just_one_padding_partial_generous) {
+  std::vector<std::pair<std::string, simdutf::result>> test_cases = {
+      {"uuuu             uu=", {simdutf::error_code::SUCCESS, 3}},
+      // 5. If char is "=", then If chunkLength < 2, then Let error be a new
+      // SyntaxError exception.
+      {"uuuu             u==",
+       {simdutf::error_code::BASE64_INPUT_REMAINDER, 18}}, // error
+      {"uuuu             u=",
+       {simdutf::error_code::BASE64_INPUT_REMAINDER, 18}}, // error
+      {"uuuu             ==",
+       {simdutf::error_code::INVALID_BASE64_CHARACTER, 17}}, // error
+      {"uuuu             =",
+       {simdutf::error_code::INVALID_BASE64_CHARACTER, 17}}, // error
+  };
+  std::vector<char> buffer(6);
+  for (auto &p : test_cases) {
+    auto input = p.first;
+    auto expected_result = p.second;
+    for (auto option : {simdutf::base64_options::base64_default,
+                        simdutf::base64_options::base64_url}) {
+      for (auto chunk_option :
+           {simdutf::last_chunk_handling_options::stop_before_partial}) {
+        auto result = implementation.base64_to_binary(
+            input.data(), input.size(), buffer.data(), option, chunk_option);
+        ASSERT_EQUAL(result.error, expected_result.error);
+        ASSERT_EQUAL(result.count, expected_result.count);
+      }
+    }
+  }
+}
+
+// loose decoding will fail when there is a single leftover padding character.
+TEST(base64_decode_just_one_padding_loose) {
+  std::vector<std::pair<std::string, simdutf::result>> test_cases = {
+      {"uuuu             =",
+       {simdutf::error_code::INVALID_BASE64_CHARACTER, 17}}};
+  std::vector<char> buffer(3);
+  for (auto &p : test_cases) {
+    auto input = p.first;
+    auto expected_result = p.second;
+    for (auto option : {simdutf::base64_options::base64_default,
+                        simdutf::base64_options::base64_url}) {
+      for (auto chunk_option : {simdutf::last_chunk_handling_options::loose}) {
+        auto result = implementation.base64_to_binary(
+            input.data(), input.size(), buffer.data(), option, chunk_option);
+        ASSERT_EQUAL(result.error, expected_result.error);
+        ASSERT_EQUAL(result.count, expected_result.count);
+      }
+    }
+  }
+}
+
+// strict decoding will fail with a pointer to the last valid character.
+TEST(base64_decode_just_one_padding_strict) {
+  std::vector<std::pair<std::string, simdutf::result>> test_cases = {
+      {"uuuu             =",
+       {simdutf::error_code::INVALID_BASE64_CHARACTER, 17}}};
+  std::vector<char> buffer(3);
+  for (auto &p : test_cases) {
+    auto input = p.first;
+    auto expected_result = p.second;
+    for (auto option : {simdutf::base64_options::base64_default,
+                        simdutf::base64_options::base64_url}) {
+      for (auto chunk_option : {simdutf::last_chunk_handling_options::strict}) {
+        auto result = implementation.base64_to_binary(
+            input.data(), input.size(), buffer.data(), option, chunk_option);
+        ASSERT_EQUAL(result.error, expected_result.error);
+        ASSERT_EQUAL(result.count, expected_result.count);
+      }
+    }
+  }
+}
+
+// partial decoding will succeed and just decode the first 3 bytes.
+// https://tc39.es/proposal-arraybuffer-base64/spec/#sec-frombase64
+TEST(base64_decode_just_one_padding_partial) {
+  std::vector<std::pair<std::string, simdutf::result>> test_cases = {
+      {"uuuu             uu=", {simdutf::error_code::SUCCESS, 3}},
+      // 5. If char is "=", then If chunkLength < 2, then Let error be a new
+      // SyntaxError exception.
+      {"uuuu             u==",
+       {simdutf::error_code::BASE64_INPUT_REMAINDER, 18}}, // error
+      {"uuuu             u=",
+       {simdutf::error_code::BASE64_INPUT_REMAINDER, 18}}, // error
+      {"uuuu             ==",
+       {simdutf::error_code::INVALID_BASE64_CHARACTER, 17}}, // error
+      {"uuuu             =",
+       {simdutf::error_code::INVALID_BASE64_CHARACTER, 17}}, // error
+  };
+  std::vector<char> buffer(3);
+  for (auto &p : test_cases) {
+    auto input = p.first;
+    auto expected_result = p.second;
+    for (auto option : {simdutf::base64_options::base64_default,
+                        simdutf::base64_options::base64_url}) {
+      for (auto chunk_option :
+           {simdutf::last_chunk_handling_options::stop_before_partial}) {
+        auto result = implementation.base64_to_binary(
+            input.data(), input.size(), buffer.data(), option, chunk_option);
+
+        ASSERT_EQUAL(result.error, expected_result.error);
+        ASSERT_EQUAL(result.count, expected_result.count);
+      }
+    }
+  }
+}
+
+TEST(base64_decode_partial_cases) {
+  std::vector<std::pair<std::string, simdutf::result>> test_cases = {
+      {"ZXhhZg", {simdutf::error_code::SUCCESS, 4}},
+      {"ZXhhZg                                                               "
+       " ",
+       {simdutf::error_code::SUCCESS, 4}},
+      {"                                                                "
+       "ZXhhZg",
+       {simdutf::error_code::SUCCESS, 68}},
+  };
+  std::vector<char> buffer(3);
+  for (auto &p : test_cases) {
+    auto input = p.first;
+    auto expected_result = p.second;
+    size_t written = buffer.size();
+    auto result = simdutf::base64_to_binary_safe(
+        input.data(), input.size(), buffer.data(), written,
+        simdutf::base64_default,
+        simdutf::last_chunk_handling_options::stop_before_partial);
+    ASSERT_EQUAL(result.error, expected_result.error);
+    ASSERT_EQUAL(result.count, expected_result.count);
+  }
+}
+
+TEST(base64_decode_strict_cases) {
+  std::vector<std::pair<std::string, uint64_t>> test_cases = {
+      {"ZXhhZg==", simdutf::error_code::SUCCESS},
+      {"YWE=", simdutf::error_code::SUCCESS},
+      {"YWF=", simdutf::error_code::BASE64_EXTRA_BITS},
+      {"ZXhhZh==", simdutf::error_code::BASE64_EXTRA_BITS},
+      // {"ZXhhZg", simdutf::error_code::BASE64_INPUT_REMAINDER},
+      // {"ZXhhZh", simdutf::error_code::BASE64_INPUT_REMAINDER},
+      {"Z   X  h  h   Z h =   =", simdutf::error_code::BASE64_EXTRA_BITS},
+      //{"ZX  h  hZg", simdutf::error_code::BASE64_INPUT_REMAINDER},
+      //{"ZXh  hZ  h", simdutf::error_code::BASE64_INPUT_REMAINDER},
+  };
+  std::vector<char> buffer(1024);
+  for (auto &p : test_cases) {
+    auto input = p.first;
+    auto expected_error = p.second;
+    simdutf::result result = implementation.base64_to_binary(
+        input.data(), input.size(), buffer.data(), simdutf::base64_default,
+        simdutf::last_chunk_handling_options::strict);
+    ASSERT_EQUAL(result.error, expected_error);
+    size_t written = buffer.size();
+    result = simdutf::base64_to_binary_safe(
+        input.data(), input.size(), buffer.data(), written,
+        simdutf::base64_default, simdutf::last_chunk_handling_options::strict);
+    ASSERT_EQUAL(result.error, expected_error);
+  }
+}
+
+TEST(base64_decode_strict_cases_length) {
+  std::vector<std::pair<std::string, simdutf::result>> test_cases = {
+      {"ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+       "dd"
+       "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddzzz=",
+       {simdutf::error_code::BASE64_EXTRA_BITS, 131}},
+  };
+  std::vector<char> buffer(1024);
+  for (auto &p : test_cases) {
+    auto input = p.first;
+    auto expected_result = p.second;
+    simdutf::result result = implementation.base64_to_binary(
+        input.data(), input.size(), buffer.data(), simdutf::base64_default,
+        simdutf::last_chunk_handling_options::strict);
+    ASSERT_EQUAL(result.error, expected_result.error);
+    ASSERT_EQUAL(result.count, expected_result.count);
+    size_t written = buffer.size();
+    result = simdutf::base64_to_binary_safe(
+        input.data(), input.size(), buffer.data(), written,
+        simdutf::base64_default, simdutf::last_chunk_handling_options::strict);
+    ASSERT_EQUAL(result.error, expected_result.error);
+    ASSERT_EQUAL(result.count, expected_result.count);
+  }
+}
+
+// https://bugs.webkit.org/show_bug.cgi?id=290829
+TEST(issue_webkit_290829) {
+  std::string data = "MjYyZg===";
+  std::vector<char> output(5); // 5 is part of the issue
+  std::vector<uint8_t> expected = {0x32, 0x36, 0x32};
+
+  for (auto option :
+       {simdutf::last_chunk_handling_options::strict,
+        simdutf::last_chunk_handling_options::loose,
+        simdutf::last_chunk_handling_options::stop_before_partial}) {
+    std::fill(output.begin(), output.end(), 0);
+    const auto r1 =
+        implementation.base64_to_binary(data.data(), data.size(), output.data(),
+                                        simdutf::base64_default, option);
+    ASSERT_EQUAL(r1.error, simdutf::error_code::INVALID_BASE64_CHARACTER);
+    ASSERT_EQUAL(r1.count, 6);
+  }
+
+  for (auto option :
+       {simdutf::last_chunk_handling_options::strict,
+        simdutf::last_chunk_handling_options::loose,
+        simdutf::last_chunk_handling_options::stop_before_partial}) {
+    std::fill(output.begin(), output.end(), 0);
+    size_t back_length = output.size();
+    constexpr bool decode_up_to_bad_char = true;
+    auto r = simdutf::base64_to_binary_safe(
+        data.data(), data.size(), output.data(), back_length,
+        simdutf::base64_default, option, decode_up_to_bad_char);
+
+    ASSERT_EQUAL(r.error, simdutf::error_code::INVALID_BASE64_CHARACTER);
+    ASSERT_EQUAL(r.count, 6);
+    ASSERT_EQUAL(back_length, 3);
+    ASSERT_BYTES_EQUAL(output, expected, 3);
+  }
+}
+
+// https://bugs.webkit.org/show_bug.cgi?id=290829
+TEST(issue_webkit_utf16_290829) {
+  std::string data = "MjYyZg===";
+  std::vector<char> output(5); // 5 is part of the issue
+  std::vector<uint16_t> expected = {0x32, 0x36, 0x32};
+
+  for (auto option :
+       {simdutf::last_chunk_handling_options::strict,
+        simdutf::last_chunk_handling_options::loose,
+        simdutf::last_chunk_handling_options::stop_before_partial}) {
+    std::fill(output.begin(), output.end(), 0);
+    const auto r1 =
+        implementation.base64_to_binary(data.data(), data.size(), output.data(),
+                                        simdutf::base64_default, option);
+    ASSERT_EQUAL(r1.error, simdutf::error_code::INVALID_BASE64_CHARACTER);
+    ASSERT_EQUAL(r1.count, 6);
+  }
+
+  for (auto option :
+       {simdutf::last_chunk_handling_options::strict,
+        simdutf::last_chunk_handling_options::loose,
+        simdutf::last_chunk_handling_options::stop_before_partial}) {
+    std::fill(output.begin(), output.end(), 0);
+    size_t back_length = output.size();
+    constexpr bool decode_up_to_bad_char = true;
+    auto r = simdutf::base64_to_binary_safe(
+        data.data(), data.size(), output.data(), back_length,
+        simdutf::base64_default, option, decode_up_to_bad_char);
+
+    ASSERT_EQUAL(r.error, simdutf::error_code::INVALID_BASE64_CHARACTER);
+    ASSERT_EQUAL(r.count, 6);
+    ASSERT_EQUAL(back_length, 3);
+    ASSERT_BYTES_EQUAL(output, expected, 3);
+  }
+}
+
+// https://bugs.webkit.org/show_bug.cgi?id=290829
+TEST(issue_webkit_utf16_290829_bad_char) {
+  std::string data(1024, 'A');
+  std::vector<char> expected(1024 / 4 * 3, 0);
+  std::vector<char> output(1024 / 4 * 3);
+  for (size_t invalid = 0; invalid < data.size(); invalid++) {
+    data[invalid] = '?'; // invalid
+    for (auto option :
+         {simdutf::last_chunk_handling_options::strict,
+          simdutf::last_chunk_handling_options::loose,
+          simdutf::last_chunk_handling_options::stop_before_partial}) {
+      std::fill(output.begin(), output.end(), 255);
+      size_t back_length = output.size();
+      constexpr bool decode_up_to_bad_char = true;
+      auto r = simdutf::base64_to_binary_safe(
+          data.data(), data.size(), output.data(), back_length,
+          simdutf::base64_default, option, decode_up_to_bad_char);
+
+      ASSERT_EQUAL(r.error, simdutf::error_code::INVALID_BASE64_CHARACTER);
+      ASSERT_EQUAL(r.count, invalid);
+      size_t expected_length = invalid / 4 * 3;
+      ASSERT_EQUAL(back_length, expected_length);
+      ASSERT_BYTES_EQUAL(output, expected, expected_length);
+    }
+    data[invalid] = 'A'; // valid
+  }
+}
+
+TEST(issue_webkit_utf16_290829_example) {
+  std::string data(1024, 'A');
+  std::vector<char> expected(1024 / 4 * 3, 0);
+  std::vector<char> output(1024 / 4 * 3);
+  for (size_t invalid = 0; invalid < data.size(); invalid++) {
+    data[invalid] = '?'; // invalid
+    for (auto option :
+         {simdutf::last_chunk_handling_options::strict,
+          simdutf::last_chunk_handling_options::loose,
+          simdutf::last_chunk_handling_options::stop_before_partial}) {
+      std::fill(output.begin(), output.end(), 255);
+      size_t back_length = output.size();
+      constexpr bool decode_up_to_bad_char = true;
+      auto r = simdutf::base64_to_binary_safe(
+          data.data(), data.size(), output.data(), back_length,
+          simdutf::base64_default, option, decode_up_to_bad_char);
+
+      ASSERT_EQUAL(r.error, simdutf::error_code::INVALID_BASE64_CHARACTER);
+      ASSERT_EQUAL(r.count, invalid);
+      size_t expected_length = invalid / 4 * 3;
+      ASSERT_EQUAL(back_length, expected_length);
+      ASSERT_BYTES_EQUAL(output, expected, expected_length);
+    }
+    data[invalid] = 'A'; // valid
+  }
+}
+
 TEST(issue_single_bad16) {
-  std::vector<char16_t> data = {0x3d};
+  std::vector<char16_t> data = {0x3f};
   ASSERT_EQUAL(data.size(), 1);
   size_t outlen = implementation.maximal_binary_length_from_base64(data.data(),
                                                                    data.size());
@@ -136,6 +1540,31 @@ TEST(issue_single_bad16) {
       simdutf::last_chunk_handling_options::strict);
   ASSERT_EQUAL(r.error, simdutf::error_code::INVALID_BASE64_CHARACTER);
   ASSERT_EQUAL(r.count, 0);
+}
+
+TEST(issue_615) {
+  const std::vector<char> data{' ', '=', '='};
+  std::vector<char> output(100);
+  const auto r1 =
+      implementation.base64_to_binary(data.data(), data.size(), output.data(),
+                                      simdutf::base64_default, simdutf::strict);
+  ASSERT_EQUAL(r1.error, simdutf::error_code::INVALID_BASE64_CHARACTER);
+  ASSERT_EQUAL(r1.count, 1);
+  const auto r2 = implementation.base64_to_binary(
+      data.data() + 1, data.size() - 1, output.data(), simdutf::base64_default,
+      simdutf::strict);
+  ASSERT_EQUAL(r2.error, simdutf::error_code::INVALID_BASE64_CHARACTER);
+  ASSERT_EQUAL(r2.count, 0);
+  const auto r3 = implementation.base64_to_binary(
+      data.data(), data.size(), output.data(), simdutf::base64_default,
+      simdutf::stop_before_partial);
+  ASSERT_EQUAL(r3.error, simdutf::error_code::INVALID_BASE64_CHARACTER);
+  ASSERT_EQUAL(r3.count, 1);
+  const auto r4 = implementation.base64_to_binary(
+      data.data() + 1, data.size() - 1, output.data(), simdutf::base64_default,
+      simdutf::stop_before_partial);
+  ASSERT_EQUAL(r4.error, simdutf::error_code::INVALID_BASE64_CHARACTER);
+  ASSERT_EQUAL(r4.count, 0);
 }
 
 TEST(issue_kkk) {
@@ -166,7 +1595,7 @@ TEST(issue_kkk) {
       simdutf::base64_url_with_padding,
       simdutf::last_chunk_handling_options::strict);
   ASSERT_EQUAL(r.error, simdutf::error_code::BASE64_INPUT_REMAINDER);
-  ASSERT_EQUAL(r.count, 132);
+  ASSERT_EQUAL(r.count, 193);
 }
 
 TEST(issue_520) {
@@ -182,7 +1611,7 @@ TEST(issue_520) {
       implementation.base64_to_binary((const char *)data.data(), data.size(),
                                       out.data(), simdutf::base64_default);
   ASSERT_EQUAL(r.error, simdutf::error_code::BASE64_INPUT_REMAINDER);
-  ASSERT_EQUAL(r.count, 0);
+  ASSERT_EQUAL(r.count, 64);
 }
 
 TEST(base64_decode_complete_input) {
@@ -208,36 +1637,170 @@ TEST(base64_decode_complete_input) {
   }
 }
 
+// https://github.com/simdutf/simdutf/issues/824
+/*
+The TC39 base64 proposal step 10.a and 10.b together means that, when using
+stop-before-partial:
+
+If in the middle of decoding a chunk, return the ending position of the previous
+chunk before skipping whitespace. If not in the middle of decoding a chunk,
+return the entire input length, including trailing whitespace.
+*/
+TEST(issue_824) {
+  struct read_write {
+    size_t read;
+    size_t written;
+  };
+  std::vector<std::tuple<std::string, read_write, std::vector<uint8_t>>>
+      test_cases = {
+          {"  ", {2, 0}, {}}, // return the entire input length, including
+                              // trailing whitespace.
+          {" A A G A / v 8 ",
+           {8, 3},
+           {0, 1, 128}} // return the ending position of the previous chunk
+                        // before skipping whitespace.
+      };
+
+  std::vector<unsigned char> case1(5463, 0x20);
+  case1.back() = 0x38;
+  test_cases.emplace_back(std::string(case1.begin(), case1.end()),
+                          read_write{0, 0}, std::vector<uint8_t>{});
+
+  std::string long_input(1000, ' ');
+  test_cases.emplace_back(long_input, read_write{1000, 0},
+                          std::vector<uint8_t>{});
+  test_cases.emplace_back(long_input + " A A G A / v 8 ",
+                          read_write{1000 + 8, 3},
+                          std::vector<uint8_t>{0, 1, 128});
+  // In https://tc39.es/proposal-arraybuffer-base64/spec/#sec-frombase64
+  // the 'read' variable is only ever incremented when a full chunk is
+  // successfully decoded. And we always return the 'read' variable,
+  // except when we reach the end of the input with a chunkLength of zero.
+  test_cases.emplace_back(long_input + "A", read_write{0, 0},
+                          std::vector<uint8_t>{});
+  test_cases.emplace_back("AAAA" + long_input + "A", read_write{4, 3},
+                          std::vector<uint8_t>{0, 0, 0});
+
+  for (const std::tuple<std::string, read_write, std::vector<uint8_t>> &t :
+       test_cases) {
+    auto input_data = std::get<0>(t);
+    auto read_write_info = std::get<1>(t);
+    auto expected_output = std::get<2>(t);
+    std::vector<uint8_t> output_buffer(
+        implementation.maximal_binary_length_from_base64(input_data.data(),
+                                                         input_data.size()));
+    size_t written = output_buffer.size();
+    auto result = simdutf::base64_to_binary_safe(
+        input_data.data(), input_data.size(),
+        reinterpret_cast<char *>(output_buffer.data()), written,
+        simdutf::base64_default,
+        simdutf::last_chunk_handling_options::stop_before_partial, true);
+    ASSERT_EQUAL(result.error, simdutf::error_code::SUCCESS);
+    ASSERT_EQUAL(result.count, read_write_info.read);
+    ASSERT_EQUAL(written, expected_output.size());
+    output_buffer.resize(written);
+    ASSERT_TRUE(output_buffer == expected_output);
+  }
+  for (const std::tuple<std::string, read_write, std::vector<uint8_t>> &t :
+       test_cases) {
+    auto input_data = std::get<0>(t);
+    auto read_write_info = std::get<1>(t);
+    auto expected_output = std::get<2>(t);
+    std::vector<uint8_t> output_buffer(expected_output.size());
+    size_t written = output_buffer.size();
+    auto result = simdutf::base64_to_binary_safe(
+        input_data.data(), input_data.size(),
+        reinterpret_cast<char *>(output_buffer.data()), written,
+        simdutf::base64_default,
+        simdutf::last_chunk_handling_options::stop_before_partial, true);
+    ASSERT_EQUAL(result.error, simdutf::error_code::SUCCESS);
+    ASSERT_EQUAL(result.count, read_write_info.read);
+    ASSERT_EQUAL(written, expected_output.size());
+    output_buffer.resize(written);
+    ASSERT_TRUE(output_buffer == expected_output);
+  }
+}
+
+TEST(issue_824_a) {
+  std::vector<unsigned char> base64(5463, 0x20);
+  base64.back() = 0x38;
+  std::vector<char> outbuf(8224);
+  std::size_t outlen = outbuf.size();
+  const auto result = simdutf::base64_to_binary_safe(
+      (const char *)base64.data(), base64.size(), outbuf.data(), outlen,
+      simdutf::base64_default,
+      simdutf::last_chunk_handling_options::stop_before_partial, false);
+  ASSERT_EQUAL(result.error, simdutf::error_code::SUCCESS);
+  ASSERT_EQUAL(result.count, 0);
+  ASSERT_EQUAL(outlen, 0);
+}
+
+TEST(issue_06_05_2025_001) {
+  const std::vector<unsigned char> base64{
+      0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f,
+      0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f,
+      0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f,
+      0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f,
+      0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f,
+      0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f,
+      0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f,
+      0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f,
+      0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x0a, 0x0a,
+      0x0a, 0x6f, 0x6e, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f,
+      0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71,
+      0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x6f, 0x0a,
+      0x0a, 0x0a, 0x0a, 0x0a, 0x67, 0x67, 0x67, 0x67, 0x67, 0x67, 0x67, 0x0a,
+      0x0a, 0x0a, 0x0a, 0x0a, 0x0a, 0x0a, 0x4b, 0x0a, 0x0a, 0x0a, 0x0a, 0x0a,
+      0x0a, 0x0a, 0x0a, 0x0a, 0x0a, 0x0a, 0x0a, 0x0a,
+  };
+  std::vector<char> outbuf(28426);
+  std::size_t outlen = outbuf.size();
+  const auto result = simdutf::base64_to_binary_safe(
+      (const char *)base64.data(), base64.size(), outbuf.data(), outlen,
+      simdutf::base64_default,
+      simdutf::last_chunk_handling_options::stop_before_partial, true);
+  ASSERT_EQUAL(result.error, simdutf::error_code::SUCCESS);
+  ASSERT_EQUAL(result.count, base64.size());
+  ASSERT_EQUAL(outlen, 111);
+};
+
 // https://github.com/WebKit/WebKit/blob/18fad22e2078542316a576989676d31cfd08d777/JSTests/stress/uint8array-fromBase64.js#L135
 TEST(base64_decode_webkit_cases) {
-  std::vector<std::pair<std::string, std::vector<uint8_t>>> test_cases = {
-      {"", {}},
-      {"AA==", {0}},
-      {"AQ==", {1}},
-      {"gA==", {128}},
-      {"/g==", {254}},
-      {"/w==", {255}},
-      {"AAE=", {0, 1}},
-      {"/v8=", {254, 255}},
-      {"AAGA/v8=", {0, 1, 128, 254, 255}},
-      {"  ", {}},
-      {"  A  A  =  =  ", {0}},
-      {"  A  Q  =  =  ", {1}},
-      {"  g  A  =  =  ", {128}},
-      {"  /  g  =  =  ", {254}},
-      {"  /  w  =  =  ", {255}},
-      {"  A  A  E  =  ", {0, 1}},
-      {"  /  v  8  =  ", {254, 255}},
-      {"  A  A  G  A  /  v  8  =  ", {0, 1, 128, 254, 255}}};
+
+  struct read_write {
+    size_t read;
+    size_t written;
+  };
+  std::vector<std::tuple<std::string, read_write, std::vector<uint8_t>>>
+      test_cases = {
+          {"", {0, 0}, {}},
+          {"AA==", {4, 1}, {0}},
+          {"AQ==", {4, 1}, {1}},
+          {"gA==", {4, 1}, {128}},
+          {"/g==", {4, 1}, {254}},
+          {"/w==", {4, 1}, {255}},
+          {"AAE=", {4, 2}, {0, 1}},
+          {"/v8=", {4, 2}, {254, 255}},
+          {"AAGA/v8=", {8, 5}, {0, 1, 128, 254, 255}},
+          {"  ", {2, 0}, {}},
+          {"  A  A  =  =  ", {14, 1}, {0}},
+          {"  A  Q  =  =  ", {14, 1}, {1}},
+          {"  g  A  =  =  ", {14, 1}, {128}},
+          {"  /  g  =  =  ", {14, 1}, {254}},
+          {"  /  w  =  =  ", {14, 1}, {255}},
+          {"  A  A  E  =  ", {14, 2}, {0, 1}},
+          {"  /  v  8  =  ", {14, 2}, {254, 255}},
+          {"  A  A  G  A  /  v  8  =  ", {26, 5}, {0, 1, 128, 254, 255}}};
 
   // Test with all last_chunk_handling_options
   for (auto option :
        {simdutf::last_chunk_handling_options::strict,
         simdutf::last_chunk_handling_options::loose,
         simdutf::last_chunk_handling_options::stop_before_partial}) {
-    for (const std::pair<std::string, std::vector<uint8_t>> &t : test_cases) {
-      auto input_data = t.first;
-      auto expected_output = t.second;
+    for (const std::tuple<std::string, read_write, std::vector<uint8_t>> &t :
+         test_cases) {
+      auto input_data = std::get<0>(t);
+      auto expected_output = std::get<2>(t);
       std::vector<uint8_t> output_buffer(
           implementation.maximal_binary_length_from_base64(input_data.data(),
                                                            input_data.size()));
@@ -252,14 +1815,38 @@ TEST(base64_decode_webkit_cases) {
     }
   }
 
-  // Test with all last_chunk_handling_options
   for (auto option :
        {simdutf::last_chunk_handling_options::strict,
         simdutf::last_chunk_handling_options::loose,
         simdutf::last_chunk_handling_options::stop_before_partial}) {
-    for (const std::pair<std::string, std::vector<uint8_t>> &t : test_cases) {
-      auto input_data = t.first;
-      auto expected_output = t.second;
+    for (const std::tuple<std::string, read_write, std::vector<uint8_t>> &t :
+         test_cases) {
+      auto input_data = std::get<0>(t);
+      auto read_write_info = std::get<1>(t);
+      auto expected_output = std::get<2>(t);
+      std::vector<uint8_t> output_buffer(
+          implementation.maximal_binary_length_from_base64(input_data.data(),
+                                                           input_data.size()));
+      auto result = implementation.base64_to_binary_details(
+          input_data.data(), input_data.size(),
+          reinterpret_cast<char *>(output_buffer.data()),
+          simdutf::base64_default, option);
+      ASSERT_EQUAL(result.error, simdutf::error_code::SUCCESS);
+      ASSERT_EQUAL(result.output_count, expected_output.size());
+      ASSERT_EQUAL(result.output_count, read_write_info.written);
+      ASSERT_EQUAL(result.input_count, read_write_info.read);
+      output_buffer.resize(result.output_count);
+      ASSERT_TRUE(output_buffer == expected_output);
+    }
+  }
+  // Test with all last_chunk_handling_options
+  for (auto option : {simdutf::last_chunk_handling_options::strict,
+                      simdutf::last_chunk_handling_options::loose}) {
+    for (const std::tuple<std::string, read_write, std::vector<uint8_t>> &t :
+         test_cases) {
+      auto input_data = std::get<0>(t);
+      auto read_write_info = std::get<1>(t);
+      auto expected_output = std::get<2>(t);
       std::vector<uint8_t> output_buffer(
           implementation.maximal_binary_length_from_base64(input_data.data(),
                                                            input_data.size()));
@@ -269,6 +1856,7 @@ TEST(base64_decode_webkit_cases) {
           reinterpret_cast<char *>(output_buffer.data()), written,
           simdutf::base64_default, option);
       ASSERT_EQUAL(result.error, simdutf::error_code::SUCCESS);
+      ASSERT_EQUAL(result.count, read_write_info.read);
       ASSERT_EQUAL(written, expected_output.size());
       output_buffer.resize(written);
       ASSERT_TRUE(output_buffer == expected_output);
@@ -328,13 +1916,13 @@ TEST(base64_decode_webkit_like_but_random_more_cases) {
     for (size_t trial = 0; trial < 10; trial++) {
       std::vector<char> source(len, 0);
       std::vector<char> buffer;
-      buffer.resize(implementation.base64_length_from_binary(len));
+      buffer.resize(simdutf::base64_length_from_binary(len));
       std::mt19937 gen((std::mt19937::result_type)(seed));
       std::uniform_int_distribution<int> byte_generator{0, 255};
       for (size_t i = 0; i < len; i++) {
         source[i] = byte_generator(gen);
       }
-      size_t size = implementation.binary_to_base64(
+      simdutf_maybe_unused const size_t size = implementation.binary_to_base64(
           source.data(), source.size(), buffer.data());
       for (size_t removed = 1; !buffer.empty() && removed <= 2; removed++) {
         buffer.pop_back();
@@ -385,13 +1973,13 @@ TEST(base64_decode_webkit_like_but_random_with_spaces_more_cases) {
     for (size_t trial = 0; trial < 20; trial++) {
       std::vector<char> source(len, 0);
       std::vector<char> buffer;
-      buffer.resize(implementation.base64_length_from_binary(len));
+      buffer.resize(simdutf::base64_length_from_binary(len));
       std::mt19937 gen((std::mt19937::result_type)(seed));
       std::uniform_int_distribution<int> byte_generator{0, 255};
       for (size_t i = 0; i < len; i++) {
         source[i] = byte_generator(gen);
       }
-      size_t size = implementation.binary_to_base64(
+      simdutf_maybe_unused const size_t size = implementation.binary_to_base64(
           source.data(), source.size(), buffer.data());
       buffer = add_simple_spaces(buffer, gen, 5 + len / 4);
       auto is_space = [](char c) {
@@ -522,7 +2110,7 @@ TEST(issue_520_url) {
   const auto r = implementation.base64_to_binary(
       (const char *)data.data(), data.size(), out.data(), simdutf::base64_url);
   ASSERT_EQUAL(r.error, simdutf::error_code::BASE64_INPUT_REMAINDER);
-  ASSERT_EQUAL(r.count, 0);
+  ASSERT_EQUAL(r.count, 64);
 }
 
 TEST(issue_511) {
@@ -654,11 +2242,90 @@ TEST(decode_base64_cases) {
   }
 }
 
+namespace cases {
+const std::vector<std::pair<std::string, std::string>> whitespaces = {
+    {"abcd", " Y\fW\tJ\njZ A=\r= "},
+};
+
+const std::vector<std::pair<std::string, std::string>> simple = {
+    {"Hello, World!", "SGVsbG8sIFdvcmxkIQ=="},
+    {"GeeksforGeeks", "R2Vla3Nmb3JHZWVrcw=="},
+    {"123456", "MTIzNDU2"},
+    {"Base64 Encoding", "QmFzZTY0IEVuY29kaW5n"},
+    {"!R~J2jL&mI]O)3=c:G3Mo)oqmJdxoprTZDyxEvU0MI.'Ww5H{G>}y;;+B8E_Ah,Ed[ "
+     "PdBqY'^N>O$4:7LK1<:|7)btV@|{YWR$$Er59-XjVrFl4L}~yzTEd4'E[@k",
+     "IVJ+SjJqTCZtSV1PKTM9YzpHM01vKW9xbUpkeG9wclRaRHl4RXZVME1JLidXdzVIe0c+"
+     "fXk7OytCOEVfQWgsRWRbIFBkQnFZJ15OPk8kNDo3TEsxPDp8NylidFZAfHtZV1IkJEVyNTk"
+     "tWGpWckZsNEx9fnl6VEVkNCdFW0Br"}};
+
+const std::vector<std::pair<std::string, std::string>> no_padding = {
+    {"Hello, World!", "SGVsbG8sIFdvcmxkIQ"},
+    {"GeeksforGeeks", "R2Vla3Nmb3JHZWVrcw"},
+    {"123456", "MTIzNDU2"},
+    {"Base64 Encoding", "QmFzZTY0IEVuY29kaW5n"},
+    {"!R~J2jL&mI]O)3=c:G3Mo)oqmJdxoprTZDyxEvU0MI.'Ww5H{G>}y;;+B8E_Ah,Ed[ "
+     "PdBqY'^N>O$4:7LK1<:|7)btV@|{YWR$$Er59-XjVrFl4L}~yzTEd4'E[@k",
+     "IVJ+SjJqTCZtSV1PKTM9YzpHM01vKW9xbUpkeG9wclRaRHl4RXZVME1JLidXdzVIe0c+"
+     "fXk7OytCOEVfQWgsRWRbIFBkQnFZJ15OPk8kNDo3TEsxPDp8NylidFZAfHtZV1IkJEVyNTk"
+     "tWGpWckZsNEx9fnl6VEVkNCdFW0Br"}};
+
+const std::vector<std::pair<std::string, std::string>> simple_url = {
+    {"Hello, World!", "SGVsbG8sIFdvcmxkIQ"},
+    {"GeeksforGeeks", "R2Vla3Nmb3JHZWVrcw"},
+    {"123456", "MTIzNDU2"},
+    {"Base64 Encoding", "QmFzZTY0IEVuY29kaW5n"},
+    {"!R~J2jL&mI]O)3=c:G3Mo)oqmJdxoprTZDyxEvU0MI.'Ww5H{G>}y;;+B8E_Ah,Ed[ "
+     "PdBqY'^N>O$4:7LK1<:|7)btV@|{YWR$$Er59-XjVrFl4L}~yzTEd4'E[@k",
+     "IVJ-SjJqTCZtSV1PKTM9YzpHM01vKW9xbUpkeG9wclRaRHl4RXZVME1JLidXdzVIe0c-"
+     "fXk7OytCOEVfQWgsRWRbIFBkQnFZJ15OPk8kNDo3TEsxPDp8NylidFZAfHtZV1IkJEVyNTk"
+     "tWGpWckZsNEx9fnl6VEVkNCdFW0Br"}};
+
+const std::vector<std::pair<std::string, std::string>> simple_url_with_padding =
+    {{"Hello, World!", "SGVsbG8sIFdvcmxkIQ=="},
+     {"GeeksforGeeks", "R2Vla3Nmb3JHZWVrcw=="},
+     {"123456", "MTIzNDU2"},
+     {"Base64 Encoding", "QmFzZTY0IEVuY29kaW5n"},
+     {"!R~J2jL&mI]O)3=c:G3Mo)oqmJdxoprTZDyxEvU0MI.'Ww5H{G>}y;;+B8E_Ah,Ed[ "
+      "PdBqY'^N>O$4:7LK1<:|7)btV@|{YWR$$Er59-XjVrFl4L}~yzTEd4'E[@k",
+      "IVJ-"
+      "SjJqTCZtSV1PKTM9YzpHM01vKW9xbUpkeG9wclRaRHl4RXZVME1JLidXdzVIe0c-"
+      "fXk7OytCOEVfQWgsRWRbIFBkQnFZJ15OPk8kNDo3TEsxPDp8NylidFZAfHtZV1IkJEV"
+      "yNTk"
+      "tWGpWckZsNEx9fnl6VEVkNCdFW0Br"}};
+} // namespace cases
+
+namespace cases16 {
+const std::vector<std::pair<std::string, std::u16string>> simple_with_padding =
+    {{"Hello, World!", u"SGVsbG8sIFdvcmxkIQ=="},
+     {"GeeksforGeeks", u"R2Vla3Nmb3JHZWVrcw=="},
+     {"123456", u"MTIzNDU2"},
+     {"Base64 Encoding", u"QmFzZTY0IEVuY29kaW5n"},
+     {"!R~J2jL&mI]O)3=c:G3Mo)oqmJdxoprTZDyxEvU0MI.'Ww5H{G>}y;;+B8E_Ah,Ed[ "
+      "PdBqY'^N>O$4:7LK1<:|7)btV@|{YWR$$Er59-XjVrFl4L}~yzTEd4'E[@k",
+      u"IVJ+"
+      u"SjJqTCZtSV1PKTM9YzpHM01vKW9xbUpkeG9wclRaRHl4RXZVME1JLidXdzVIe0c+"
+      u"fXk7OytCOEVfQWgsRWRbIFBkQnFZJ15OPk8kNDo3TEsxPDp8NylidFZAfHtZV1IkJE"
+      u"VyNT"
+      u"ktWGpWckZsNEx9fnl6VEVkNCdFW0Br"}};
+
+const std::vector<std::pair<std::string, std::u16string>>
+    simple_url_without_padding = {
+        {"Hello, World!", u"SGVsbG8sIFdvcmxkIQ"},
+        {"GeeksforGeeks", u"R2Vla3Nmb3JHZWVrcw"},
+        {"123456", u"MTIzNDU2"},
+        {"Base64 Encoding", u"QmFzZTY0IEVuY29kaW5n"},
+        {"!R~J2jL&mI]O)3=c:G3Mo)oqmJdxoprTZDyxEvU0MI.'Ww5H{G>}y;;+B8E_Ah,Ed[ "
+         "PdBqY'^N>O$4:7LK1<:|7)btV@|{YWR$$Er59-XjVrFl4L}~yzTEd4'E[@k",
+         u"IVJ-"
+         u"SjJqTCZtSV1PKTM9YzpHM01vKW9xbUpkeG9wclRaRHl4RXZVME1JLidXdzVIe0c-"
+         u"fXk7OytCOEVfQWgsRWRbIFBkQnFZJ15OPk8kNDo3TEsxPDp8NylidFZAfHtZV1IkJE"
+         u"Vy"
+         u"NT"
+         u"ktWGpWckZsNEx9fnl6VEVkNCdFW0Br"}};
+} // namespace cases16
+
 TEST(complete_decode_base64_cases) {
-  std::vector<std::pair<std::string, std::string>> cases = {
-      {"abcd", " Y\fW\tJ\njZ A=\r= "},
-  };
-  for (std::pair<std::string, std::string> p : cases) {
+  for (const auto &p : cases::whitespaces) {
     std::vector<char> buffer(implementation.maximal_binary_length_from_base64(
         p.second.data(), p.second.size()));
     simdutf::result r = implementation.base64_to_binary(
@@ -669,8 +2336,10 @@ TEST(complete_decode_base64_cases) {
       ASSERT_EQUAL(buffer[i], p.first[i]);
     }
   }
-  printf(" --  ");
-  for (std::pair<std::string, std::string> p : cases) {
+}
+
+TEST(complete_safe_decode_base64_cases) {
+  for (const auto &p : cases::whitespaces) {
     std::vector<char> buffer(implementation.maximal_binary_length_from_base64(
         p.second.data(), p.second.size()));
     size_t bufsize = buffer.size();
@@ -681,26 +2350,21 @@ TEST(complete_decode_base64_cases) {
     for (size_t i = 0; i < bufsize; i++) {
       ASSERT_EQUAL(buffer[i], p.first[i]);
     }
+#if SIMDUTF_ATOMIC_REF
+    bufsize = buffer.size();
+    r = simdutf::atomic_base64_to_binary_safe(p.second.data(), p.second.size(),
+                                              buffer.data(), bufsize);
+    ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
+    ASSERT_EQUAL(bufsize, p.first.size());
+    for (size_t i = 0; i < bufsize; i++) {
+      ASSERT_EQUAL(buffer[i], p.first[i]);
+    }
+#endif
   }
 }
 
-TEST(complete_decode_base64url_cases) {
-  std::vector<std::pair<std::string, std::string>> cases = {
-      {"abcd", " Y\fW\tJ\njZ A=\r= "},
-  };
-  for (std::pair<std::string, std::string> p : cases) {
-    std::vector<char> buffer(implementation.maximal_binary_length_from_base64(
-        p.second.data(), p.second.size()));
-    simdutf::result r = implementation.base64_to_binary(
-        p.second.data(), p.second.size(), buffer.data(), simdutf::base64_url);
-    ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
-    ASSERT_EQUAL(r.count, p.first.size());
-    for (size_t i = 0; i < r.count; i++) {
-      ASSERT_EQUAL(buffer[i], p.first[i]);
-    }
-  }
-  printf(" --  ");
-  for (std::pair<std::string, std::string> p : cases) {
+TEST(complete_safe_decode_base64url_cases) {
+  for (const auto &p : cases::whitespaces) {
     std::vector<char> buffer(implementation.maximal_binary_length_from_base64(
         p.second.data(), p.second.size()));
     size_t bufsize = buffer.size();
@@ -712,34 +2376,34 @@ TEST(complete_decode_base64url_cases) {
     for (size_t i = 0; i < bufsize; i++) {
       ASSERT_EQUAL(buffer[i], p.first[i]);
     }
+#if SIMDUTF_ATOMIC_REF
+    bufsize = buffer.size();
+    r = simdutf::base64_to_binary_safe(p.second.data(), p.second.size(),
+                                       buffer.data(), bufsize,
+                                       simdutf::base64_url);
+    ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
+    ASSERT_EQUAL(bufsize, p.first.size());
+    for (size_t i = 0; i < bufsize; i++) {
+      ASSERT_EQUAL(buffer[i], p.first[i]);
+    }
+#endif
   }
 }
 
 TEST(encode_base64_cases) {
-  std::vector<std::pair<std::string, std::string>> cases = {
-      {"Hello, World!", "SGVsbG8sIFdvcmxkIQ=="},
-      {"GeeksforGeeks", "R2Vla3Nmb3JHZWVrcw=="},
-      {"123456", "MTIzNDU2"},
-      {"Base64 Encoding", "QmFzZTY0IEVuY29kaW5n"},
-      {"!R~J2jL&mI]O)3=c:G3Mo)oqmJdxoprTZDyxEvU0MI.'Ww5H{G>}y;;+B8E_Ah,Ed[ "
-       "PdBqY'^N>O$4:7LK1<:|7)btV@|{YWR$$Er59-XjVrFl4L}~yzTEd4'E[@k",
-       "IVJ+SjJqTCZtSV1PKTM9YzpHM01vKW9xbUpkeG9wclRaRHl4RXZVME1JLidXdzVIe0c+"
-       "fXk7OytCOEVfQWgsRWRbIFBkQnFZJ15OPk8kNDo3TEsxPDp8NylidFZAfHtZV1IkJEVyNTk"
-       "tWGpWckZsNEx9fnl6VEVkNCdFW0Br"}};
-  std::vector<simdutf::error_code> codes = {simdutf::error_code::SUCCESS};
-  std::vector<size_t> counts = {1};
-  printf(" -- ");
-  for (std::pair<std::string, std::string> p : cases) {
+  for (const auto &p : cases::simple) {
     std::vector<char> buffer(
-        implementation.base64_length_from_binary(p.first.size()));
+        simdutf::base64_length_from_binary(p.first.size()));
     ASSERT_EQUAL(buffer.size(), p.second.size());
     size_t s = implementation.binary_to_base64(p.first.data(), p.first.size(),
                                                buffer.data());
     ASSERT_EQUAL(s, p.second.size());
     ASSERT_EQUAL(std::string(buffer.data(), buffer.size()), p.second);
   }
-  printf(" -- ");
-  for (std::pair<std::string, std::string> p : cases) {
+}
+
+TEST(decode_base64_simple) {
+  for (const auto &p : cases::simple) {
     std::vector<char> buffer(implementation.maximal_binary_length_from_base64(
         p.second.data(), p.second.size()));
     ASSERT_EQUAL(buffer.size(), p.first.size());
@@ -751,8 +2415,10 @@ TEST(encode_base64_cases) {
       ASSERT_EQUAL(buffer[i], p.first[i]);
     }
   }
-  printf(" --  ");
-  for (std::pair<std::string, std::string> p : cases) {
+}
+
+TEST(safe_decode_base64_simple) {
+  for (const auto &p : cases::simple) {
     std::vector<char> buffer(implementation.maximal_binary_length_from_base64(
         p.second.data(), p.second.size()));
     ASSERT_EQUAL(buffer.size(), p.first.size());
@@ -769,21 +2435,8 @@ TEST(encode_base64_cases) {
 }
 
 TEST(encode_base64_cases_no_padding) {
-  std::vector<std::pair<std::string, std::string>> cases = {
-      {"Hello, World!", "SGVsbG8sIFdvcmxkIQ"},
-      {"GeeksforGeeks", "R2Vla3Nmb3JHZWVrcw"},
-      {"123456", "MTIzNDU2"},
-      {"Base64 Encoding", "QmFzZTY0IEVuY29kaW5n"},
-      {"!R~J2jL&mI]O)3=c:G3Mo)oqmJdxoprTZDyxEvU0MI.'Ww5H{G>}y;;+B8E_Ah,Ed[ "
-       "PdBqY'^N>O$4:7LK1<:|7)btV@|{YWR$$Er59-XjVrFl4L}~yzTEd4'E[@k",
-       "IVJ+SjJqTCZtSV1PKTM9YzpHM01vKW9xbUpkeG9wclRaRHl4RXZVME1JLidXdzVIe0c+"
-       "fXk7OytCOEVfQWgsRWRbIFBkQnFZJ15OPk8kNDo3TEsxPDp8NylidFZAfHtZV1IkJEVyNTk"
-       "tWGpWckZsNEx9fnl6VEVkNCdFW0Br"}};
-  std::vector<simdutf::error_code> codes = {simdutf::error_code::SUCCESS};
-  std::vector<size_t> counts = {1};
-  printf(" -- ");
-  for (std::pair<std::string, std::string> p : cases) {
-    std::vector<char> buffer(implementation.base64_length_from_binary(
+  for (const auto &p : cases::no_padding) {
+    std::vector<char> buffer(simdutf::base64_length_from_binary(
         p.first.size(), simdutf::base64_default_no_padding));
     ASSERT_EQUAL(buffer.size(), p.second.size());
     size_t s = implementation.binary_to_base64(
@@ -796,22 +2449,9 @@ TEST(encode_base64_cases_no_padding) {
 
 #if SIMDUTF_BASE64URL_TESTS
 
-TEST(encode_base64url_cases) {
-  std::vector<std::pair<std::string, std::string>> cases = {
-      {"Hello, World!", "SGVsbG8sIFdvcmxkIQ"},
-      {"GeeksforGeeks", "R2Vla3Nmb3JHZWVrcw"},
-      {"123456", "MTIzNDU2"},
-      {"Base64 Encoding", "QmFzZTY0IEVuY29kaW5n"},
-      {"!R~J2jL&mI]O)3=c:G3Mo)oqmJdxoprTZDyxEvU0MI.'Ww5H{G>}y;;+B8E_Ah,Ed[ "
-       "PdBqY'^N>O$4:7LK1<:|7)btV@|{YWR$$Er59-XjVrFl4L}~yzTEd4'E[@k",
-       "IVJ-SjJqTCZtSV1PKTM9YzpHM01vKW9xbUpkeG9wclRaRHl4RXZVME1JLidXdzVIe0c-"
-       "fXk7OytCOEVfQWgsRWRbIFBkQnFZJ15OPk8kNDo3TEsxPDp8NylidFZAfHtZV1IkJEVyNTk"
-       "tWGpWckZsNEx9fnl6VEVkNCdFW0Br"}};
-  std::vector<simdutf::error_code> codes = {simdutf::error_code::SUCCESS};
-  std::vector<size_t> counts = {1};
-  printf(" -- ");
-  for (std::pair<std::string, std::string> p : cases) {
-    std::vector<char> buffer(implementation.base64_length_from_binary(
+TEST(encode_base64url_simple) {
+  for (const auto &p : cases::simple_url) {
+    std::vector<char> buffer(simdutf::base64_length_from_binary(
         p.first.size(), simdutf::base64_url));
     ASSERT_EQUAL(buffer.size(), p.second.size());
     size_t s = implementation.binary_to_base64(
@@ -824,8 +2464,10 @@ TEST(encode_base64url_cases) {
     }
     ASSERT_EQUAL(std::string(buffer.data(), buffer.size()), p.second);
   }
-  printf(" -- ");
-  for (std::pair<std::string, std::string> p : cases) {
+}
+
+TEST(decode_base64url) {
+  for (const auto &p : cases::simple_url) {
     std::vector<char> buffer(implementation.maximal_binary_length_from_base64(
         p.second.data(), p.second.size()));
     ASSERT_EQUAL(buffer.size(), p.first.size());
@@ -837,8 +2479,10 @@ TEST(encode_base64url_cases) {
       ASSERT_EQUAL(buffer[i], p.first[i]);
     }
   }
-  printf(" --  ");
-  for (std::pair<std::string, std::string> p : cases) {
+}
+
+TEST(safe_decode_base64url) {
+  for (const auto &p : cases::simple_url) {
     std::vector<char> buffer(implementation.maximal_binary_length_from_base64(
         p.second.data(), p.second.size()));
     ASSERT_EQUAL(buffer.size(), p.first.size());
@@ -856,21 +2500,8 @@ TEST(encode_base64url_cases) {
 }
 
 TEST(encode_base64url_with_padding_cases) {
-  std::vector<std::pair<std::string, std::string>> cases = {
-      {"Hello, World!", "SGVsbG8sIFdvcmxkIQ=="},
-      {"GeeksforGeeks", "R2Vla3Nmb3JHZWVrcw=="},
-      {"123456", "MTIzNDU2"},
-      {"Base64 Encoding", "QmFzZTY0IEVuY29kaW5n"},
-      {"!R~J2jL&mI]O)3=c:G3Mo)oqmJdxoprTZDyxEvU0MI.'Ww5H{G>}y;;+B8E_Ah,Ed[ "
-       "PdBqY'^N>O$4:7LK1<:|7)btV@|{YWR$$Er59-XjVrFl4L}~yzTEd4'E[@k",
-       "IVJ-SjJqTCZtSV1PKTM9YzpHM01vKW9xbUpkeG9wclRaRHl4RXZVME1JLidXdzVIe0c-"
-       "fXk7OytCOEVfQWgsRWRbIFBkQnFZJ15OPk8kNDo3TEsxPDp8NylidFZAfHtZV1IkJEVyNTk"
-       "tWGpWckZsNEx9fnl6VEVkNCdFW0Br"}};
-  std::vector<simdutf::error_code> codes = {simdutf::error_code::SUCCESS};
-  std::vector<size_t> counts = {1};
-  printf(" -- ");
-  for (std::pair<std::string, std::string> p : cases) {
-    std::vector<char> buffer(implementation.base64_length_from_binary(
+  for (const auto &p : cases::simple_url_with_padding) {
+    std::vector<char> buffer(simdutf::base64_length_from_binary(
         p.first.size(), simdutf::base64_url_with_padding));
     ASSERT_EQUAL(buffer.size(), p.second.size());
     size_t s = implementation.binary_to_base64(
@@ -888,22 +2519,8 @@ TEST(encode_base64url_with_padding_cases) {
 
 #endif
 
-TEST(encode_base64_cases_16) {
-  std::vector<std::pair<std::string, std::u16string>> cases = {
-      {"Hello, World!", u"SGVsbG8sIFdvcmxkIQ=="},
-      {"GeeksforGeeks", u"R2Vla3Nmb3JHZWVrcw=="},
-      {"123456", u"MTIzNDU2"},
-      {"Base64 Encoding", u"QmFzZTY0IEVuY29kaW5n"},
-      {"!R~J2jL&mI]O)3=c:G3Mo)oqmJdxoprTZDyxEvU0MI.'Ww5H{G>}y;;+B8E_Ah,Ed[ "
-       "PdBqY'^N>O$4:7LK1<:|7)btV@|{YWR$$Er59-XjVrFl4L}~yzTEd4'E[@k",
-       u"IVJ+SjJqTCZtSV1PKTM9YzpHM01vKW9xbUpkeG9wclRaRHl4RXZVME1JLidXdzVIe0c+"
-       u"fXk7OytCOEVfQWgsRWRbIFBkQnFZJ15OPk8kNDo3TEsxPDp8NylidFZAfHtZV1IkJEVyNT"
-       u"ktWGpWckZsNEx9fnl6VEVkNCdFW0Br"}};
-  std::vector<simdutf::error_code> codes = {simdutf::error_code::SUCCESS};
-  std::vector<size_t> counts = {1};
-  printf(" -- ");
-
-  for (std::pair<std::string, std::u16string> p : cases) {
+TEST(decode_base64_cases_16) {
+  for (const auto &p : cases16::simple_with_padding) {
     std::vector<char> buffer(implementation.maximal_binary_length_from_base64(
         p.second.data(), p.second.size()));
     ASSERT_EQUAL(buffer.size(), p.first.size());
@@ -911,12 +2528,12 @@ TEST(encode_base64_cases_16) {
         p.second.data(), p.second.size(), buffer.data());
     ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
     ASSERT_EQUAL(r.count, p.first.size());
-    for (size_t i = 0; i < buffer.size(); i++) {
-      ASSERT_EQUAL(buffer[i], p.first[i]);
-    }
+    ASSERT_BYTES_EQUAL(buffer, p.first, r.count);
   }
-  printf(" -- ");
-  for (std::pair<std::string, std::u16string> p : cases) {
+}
+
+TEST(safe_decode_base64_cases_16) {
+  for (const auto &p : cases16::simple_with_padding) {
     std::vector<char> buffer(implementation.maximal_binary_length_from_base64(
         p.second.data(), p.second.size()));
     ASSERT_EQUAL(buffer.size(), p.first.size());
@@ -934,22 +2551,8 @@ TEST(encode_base64_cases_16) {
 
 #if SIMDUTF_BASE64URL_TESTS
 
-TEST(encode_base64url_cases_16) {
-  std::vector<std::pair<std::string, std::u16string>> cases = {
-      {"Hello, World!", u"SGVsbG8sIFdvcmxkIQ"},
-      {"GeeksforGeeks", u"R2Vla3Nmb3JHZWVrcw"},
-      {"123456", u"MTIzNDU2"},
-      {"Base64 Encoding", u"QmFzZTY0IEVuY29kaW5n"},
-      {"!R~J2jL&mI]O)3=c:G3Mo)oqmJdxoprTZDyxEvU0MI.'Ww5H{G>}y;;+B8E_Ah,Ed[ "
-       "PdBqY'^N>O$4:7LK1<:|7)btV@|{YWR$$Er59-XjVrFl4L}~yzTEd4'E[@k",
-       u"IVJ-SjJqTCZtSV1PKTM9YzpHM01vKW9xbUpkeG9wclRaRHl4RXZVME1JLidXdzVIe0c-"
-       u"fXk7OytCOEVfQWgsRWRbIFBkQnFZJ15OPk8kNDo3TEsxPDp8NylidFZAfHtZV1IkJEVyNT"
-       u"ktWGpWckZsNEx9fnl6VEVkNCdFW0Br"}};
-  std::vector<simdutf::error_code> codes = {simdutf::error_code::SUCCESS};
-  std::vector<size_t> counts = {1};
-  printf(" -- ");
-
-  for (std::pair<std::string, std::u16string> p : cases) {
+TEST(decode_base64url_cases_16) {
+  for (const auto &p : cases16::simple_url_without_padding) {
     std::vector<char> buffer(implementation.maximal_binary_length_from_base64(
         p.second.data(), p.second.size()));
     ASSERT_EQUAL(buffer.size(), p.first.size());
@@ -961,8 +2564,10 @@ TEST(encode_base64url_cases_16) {
       ASSERT_EQUAL(buffer[i], p.first[i]);
     }
   }
-  printf(" -- ");
-  for (std::pair<std::string, std::u16string> p : cases) {
+}
+
+TEST(safe_decode_base64url_cases_16) {
+  for (const auto &p : cases16::simple_url_without_padding) {
     std::vector<char> buffer(implementation.maximal_binary_length_from_base64(
         p.second.data(), p.second.size()));
     ASSERT_EQUAL(buffer.size(), p.first.size());
@@ -985,7 +2590,7 @@ TEST(roundtrip_base64) {
   for (size_t len = 0; len < 2048; len++) {
     std::vector<char> source(len, 0);
     std::vector<char> buffer;
-    buffer.resize(implementation.base64_length_from_binary(len));
+    buffer.resize(simdutf::base64_length_from_binary(len));
     std::vector<char> back(len);
     std::mt19937 gen((std::mt19937::result_type)(seed));
     std::uniform_int_distribution<int> byte_generator{0, 255};
@@ -995,7 +2600,7 @@ TEST(roundtrip_base64) {
       }
       size_t size = implementation.binary_to_base64(
           source.data(), source.size(), buffer.data());
-      ASSERT_EQUAL(size, implementation.base64_length_from_binary(len));
+      ASSERT_EQUAL(size, simdutf::base64_length_from_binary(len));
       simdutf::result r =
           implementation.base64_to_binary(buffer.data(), size, back.data());
       ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
@@ -1016,10 +2621,8 @@ TEST(roundtrip_base64) {
       ASSERT_TRUE(back == source);
 
       // Test with all last_chunk_handling_options
-      for (auto option :
-           {simdutf::last_chunk_handling_options::strict,
-            simdutf::last_chunk_handling_options::loose,
-            simdutf::last_chunk_handling_options::stop_before_partial}) {
+      for (auto option : {simdutf::last_chunk_handling_options::strict,
+                          simdutf::last_chunk_handling_options::loose}) {
         r = implementation.base64_to_binary(buffer.data(), size, back.data(),
                                             simdutf::base64_default, option);
         ASSERT_TRUE((size % 4) == 0);
@@ -1037,7 +2640,7 @@ TEST(roundtrip_base64_16) {
     std::vector<char> buffer;
     std::vector<char16_t> buffer16;
 
-    buffer.resize(implementation.base64_length_from_binary(len));
+    buffer.resize(simdutf::base64_length_from_binary(len));
     std::vector<char> back(len);
     std::mt19937 gen((std::mt19937::result_type)(seed));
     std::uniform_int_distribution<int> byte_generator{0, 255};
@@ -1052,7 +2655,7 @@ TEST(roundtrip_base64_16) {
       for (size_t i = 0; i < buffer.size(); i++) {
         buffer16[i] = buffer[i];
       }
-      ASSERT_EQUAL(size, implementation.base64_length_from_binary(len));
+      ASSERT_EQUAL(size, simdutf::base64_length_from_binary(len));
       simdutf::result r =
           implementation.base64_to_binary(buffer16.data(), size, back.data());
       ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
@@ -1073,10 +2676,8 @@ TEST(roundtrip_base64_16) {
       ASSERT_TRUE(back == source);
 
       // Test with all last_chunk_handling_options
-      for (auto option :
-           {simdutf::last_chunk_handling_options::strict,
-            simdutf::last_chunk_handling_options::loose,
-            simdutf::last_chunk_handling_options::stop_before_partial}) {
+      for (auto option : {simdutf::last_chunk_handling_options::strict,
+                          simdutf::last_chunk_handling_options::loose}) {
         r = implementation.base64_to_binary(buffer.data(), size, back.data(),
                                             simdutf::base64_default, option);
         ASSERT_TRUE((size % 4) == 0);
@@ -1094,8 +2695,7 @@ TEST(roundtrip_base64url) {
   for (size_t len = 0; len < 2048; len++) {
     std::vector<char> source(len, 0);
     std::vector<char> buffer;
-    buffer.resize(
-        implementation.base64_length_from_binary(len, simdutf::base64_url));
+    buffer.resize(simdutf::base64_length_from_binary(len, simdutf::base64_url));
     std::vector<char> back(len);
     std::mt19937 gen((std::mt19937::result_type)(seed));
     std::uniform_int_distribution<int> byte_generator{0, 255};
@@ -1105,8 +2705,8 @@ TEST(roundtrip_base64url) {
       }
       size_t size = implementation.binary_to_base64(
           source.data(), source.size(), buffer.data(), simdutf::base64_url);
-      ASSERT_EQUAL(size, implementation.base64_length_from_binary(
-                             len, simdutf::base64_url));
+      ASSERT_EQUAL(
+          size, simdutf::base64_length_from_binary(len, simdutf::base64_url));
       simdutf::result r = implementation.base64_to_binary(
           buffer.data(), size, back.data(), simdutf::base64_url);
       ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
@@ -1163,8 +2763,7 @@ TEST(roundtrip_base64url_16) {
     std::vector<char> buffer;
     std::vector<char16_t> buffer16;
 
-    buffer.resize(
-        implementation.base64_length_from_binary(len, simdutf::base64_url));
+    buffer.resize(simdutf::base64_length_from_binary(len, simdutf::base64_url));
     std::vector<char> back(len);
     std::mt19937 gen((std::mt19937::result_type)(seed));
     std::uniform_int_distribution<int> byte_generator{0, 255};
@@ -1179,8 +2778,8 @@ TEST(roundtrip_base64url_16) {
       for (size_t i = 0; i < buffer.size(); i++) {
         buffer16[i] = buffer[i];
       }
-      ASSERT_EQUAL(size, implementation.base64_length_from_binary(
-                             len, simdutf::base64_url));
+      ASSERT_EQUAL(
+          size, simdutf::base64_length_from_binary(len, simdutf::base64_url));
       simdutf::result r = implementation.base64_to_binary(
           buffer16.data(), size, back.data(), simdutf::base64_url);
       ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
@@ -1234,7 +2833,7 @@ TEST(bad_padding_base64) {
   for (size_t len = 0; len < 2048; len++) {
     std::vector<char> source(len, 0);
     std::vector<char> buffer;
-    buffer.resize(implementation.base64_length_from_binary(len) + 1);
+    buffer.resize(simdutf::base64_length_from_binary(len) + 1);
     std::mt19937 gen((std::mt19937::result_type)(seed));
     std::uniform_int_distribution<int> byte_generator{0, 255};
     for (size_t trial = 0; trial < 10; trial++) {
@@ -1306,7 +2905,7 @@ TEST(doomed_base64_roundtrip) {
   for (size_t len = 0; len < 2048; len++) {
     std::vector<char> source(len, 0);
     std::vector<char> buffer;
-    buffer.resize(implementation.base64_length_from_binary(len));
+    buffer.resize(simdutf::base64_length_from_binary(len));
     std::mt19937 gen((std::mt19937::result_type)(seed));
     std::uniform_int_distribution<int> byte_generator{0, 255};
     for (size_t trial = 0; trial < 10; trial++) {
@@ -1316,7 +2915,7 @@ TEST(doomed_base64_roundtrip) {
       size_t size = implementation.binary_to_base64(
           source.data(), source.size(), buffer.data());
       buffer.resize(size);
-      size_t location = add_garbage(buffer, gen);
+      size_t location = add_garbage(buffer, gen, to_base64_value);
       std::vector<char> back(simdutf::maximal_binary_length_from_base64(
           buffer.data(), buffer.size()));
       simdutf::result r =
@@ -1348,26 +2947,22 @@ TEST(doomed_truncated_base64_roundtrip) {
       for (size_t i = 0; i < len; i++) {
         source[i] = byte_generator(gen);
       }
-      buffer.resize(implementation.base64_length_from_binary(len));
+      buffer.resize(simdutf::base64_length_from_binary(len));
       size_t size = implementation.binary_to_base64(
           source.data(), source.size(), buffer.data());
       buffer.resize(size - 3);
       std::vector<char> back(simdutf::maximal_binary_length_from_base64(
           buffer.data(), buffer.size()));
-      for (auto option :
-           {simdutf::last_chunk_handling_options::loose,
-            simdutf::last_chunk_handling_options::strict,
-            simdutf::last_chunk_handling_options::stop_before_partial}) {
+      for (auto option : {simdutf::last_chunk_handling_options::loose,
+                          simdutf::last_chunk_handling_options::strict}) {
         simdutf::result r = implementation.base64_to_binary(
             buffer.data(), buffer.size(), back.data(), simdutf::base64_default,
             option);
         ASSERT_EQUAL(r.error, simdutf::error_code::BASE64_INPUT_REMAINDER);
-        ASSERT_EQUAL(r.count, (size - 4) / 4 * 3);
         size_t back_length = back.size();
         r = simdutf::base64_to_binary_safe(buffer.data(), buffer.size(),
                                            back.data(), back_length);
         ASSERT_EQUAL(r.error, simdutf::error_code::BASE64_INPUT_REMAINDER);
-        ASSERT_EQUAL(r.count, buffer.size());
       }
     }
   }
@@ -1384,7 +2979,7 @@ TEST(doomed_truncated_base64_roundtrip_16) {
       for (size_t i = 0; i < len; i++) {
         source[i] = byte_generator(gen);
       }
-      buffer.resize(implementation.base64_length_from_binary(len));
+      buffer.resize(simdutf::base64_length_from_binary(len));
       size_t size = implementation.binary_to_base64(
           source.data(), source.size(), buffer.data());
       buffer.resize(size - 3);
@@ -1397,61 +2992,10 @@ TEST(doomed_truncated_base64_roundtrip_16) {
       simdutf::result r = implementation.base64_to_binary(
           buffer16.data(), buffer16.size(), back.data());
       ASSERT_EQUAL(r.error, simdutf::error_code::BASE64_INPUT_REMAINDER);
-      ASSERT_EQUAL(r.count, (size - 4) / 4 * 3);
       size_t back_length = back.size();
       r = simdutf::base64_to_binary_safe(buffer16.data(), buffer16.size(),
                                          back.data(), back_length);
       ASSERT_EQUAL(r.error, simdutf::error_code::BASE64_INPUT_REMAINDER);
-      ASSERT_EQUAL(r.count, buffer16.size());
-    }
-  }
-}
-
-TEST(roundtrip_base64_with_spaces) {
-  for (size_t len = 0; len < 2048; len++) {
-    std::vector<char> source(len, 0);
-    std::vector<char> buffer;
-    buffer.resize(implementation.base64_length_from_binary(len));
-    std::mt19937 gen((std::mt19937::result_type)(seed));
-    std::uniform_int_distribution<int> byte_generator{0, 255};
-    for (size_t trial = 0; trial < 10; trial++) {
-      for (size_t i = 0; i < len; i++) {
-        source[i] = byte_generator(gen);
-      }
-      size_t size = implementation.binary_to_base64(
-          source.data(), source.size(), buffer.data());
-      buffer.resize(size);
-      for (size_t i = 0; i < 5; i++) {
-        add_space(buffer, gen);
-      }
-      std::vector<char> back(simdutf::maximal_binary_length_from_base64(
-          buffer.data(), buffer.size()));
-      for (auto option :
-           {simdutf::last_chunk_handling_options::strict,
-            simdutf::last_chunk_handling_options::loose,
-            simdutf::last_chunk_handling_options::stop_before_partial}) {
-        simdutf::result r = implementation.base64_to_binary(
-            buffer.data(), buffer.size(), back.data(), simdutf::base64_default,
-            option);
-        ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
-        ASSERT_EQUAL(r.count, len);
-        ASSERT_TRUE(
-            std::equal(back.begin(), back.begin() + len, source.begin()));
-      }
-      for (auto option :
-           {simdutf::last_chunk_handling_options::strict,
-            simdutf::last_chunk_handling_options::loose,
-            simdutf::last_chunk_handling_options::stop_before_partial}) {
-        size_t back_length = back.size();
-        auto r = simdutf::base64_to_binary_safe(
-            buffer.data(), buffer.size(), back.data(), back_length,
-            simdutf::base64_default, option);
-
-        ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
-        ASSERT_EQUAL(r.count, buffer.size());
-        ASSERT_TRUE(std::equal(back.begin(), back.begin() + back_length,
-                               source.begin()));
-      }
     }
   }
 }
@@ -1462,7 +3006,7 @@ TEST(roundtrip_base64_16_with_spaces) {
     std::vector<char> buffer;
     std::vector<char16_t> buffer16;
 
-    buffer.resize(implementation.base64_length_from_binary(len));
+    buffer.resize(simdutf::base64_length_from_binary(len));
     std::vector<char> back(len);
     std::mt19937 gen((std::mt19937::result_type)(seed));
     std::uniform_int_distribution<int> byte_generator{0, 255};
@@ -1480,9 +3024,106 @@ TEST(roundtrip_base64_16_with_spaces) {
       for (size_t i = 0; i < buffer.size(); i++) {
         buffer16[i] = buffer[i];
       }
-      ASSERT_EQUAL(size, implementation.base64_length_from_binary(len));
+      ASSERT_EQUAL(size, simdutf::base64_length_from_binary(len));
       simdutf::result r = implementation.base64_to_binary(
           buffer16.data(), buffer16.size(), back.data());
+      ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
+      ASSERT_EQUAL(r.count, len);
+      if (back != source) {
+        printf("=====input size %zu\n", len);
+        for (size_t i = 0; i < len; i++) {
+          if (back[i] != source[i]) {
+            printf("Mismatch at position %zu trial %zu\n", i, trial);
+          }
+          printf("%zu: %02x %02x\n", i, uint8_t(back[i]), uint8_t(source[i]));
+        }
+        printf("=====base64 size %zu\n", size);
+        for (size_t i = 0; i < size; i++) {
+          printf("%zu: %02x %c\n", i, uint8_t(buffer[i]), buffer[i]);
+        }
+      }
+      ASSERT_TRUE(back == source);
+    }
+  }
+}
+
+TEST(roundtrip_base64_16_with_garbage) {
+  for (size_t len = 0; len < 2048; len++) {
+    std::vector<char> source(len, 0);
+    std::vector<char> buffer;
+    std::vector<char16_t> buffer16;
+
+    buffer.resize(simdutf::base64_length_from_binary(len));
+    std::vector<char> back(len);
+    std::mt19937 gen((std::mt19937::result_type)(seed));
+    std::uniform_int_distribution<int> byte_generator{0, 255};
+    for (size_t trial = 0; trial < 10; trial++) {
+      for (size_t i = 0; i < len; i++) {
+        source[i] = byte_generator(gen);
+      }
+      size_t size = implementation.binary_to_base64(
+          source.data(), source.size(), buffer.data());
+      buffer.resize(size);
+      for (size_t i = 0; i < 5; i++) {
+        add_garbage(buffer, gen, to_base64_value);
+      }
+      buffer16.resize(buffer.size());
+      for (size_t i = 0; i < buffer.size(); i++) {
+        buffer16[i] = buffer[i];
+      }
+      ASSERT_EQUAL(size, simdutf::base64_length_from_binary(len));
+      simdutf::result r = implementation.base64_to_binary(
+          buffer16.data(), buffer16.size(), back.data(),
+          simdutf::base64_default_accept_garbage);
+      ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
+      ASSERT_EQUAL(r.count, len);
+      if (back != source) {
+        printf("=====input size %zu\n", len);
+        for (size_t i = 0; i < len; i++) {
+          if (back[i] != source[i]) {
+            printf("Mismatch at position %zu trial %zu\n", i, trial);
+          }
+          printf("%zu: %02x %02x\n", i, uint8_t(back[i]), uint8_t(source[i]));
+        }
+        printf("=====base64 size %zu\n", size);
+        for (size_t i = 0; i < size; i++) {
+          printf("%zu: %02x %c\n", i, uint8_t(buffer[i]), buffer[i]);
+        }
+      }
+      ASSERT_TRUE(back == source);
+    }
+  }
+}
+
+TEST(roundtrip_base64_url_16_with_garbage) {
+  for (size_t len = 0; len < 2048; len++) {
+    std::vector<char> source(len, 0);
+    std::vector<char> buffer;
+    std::vector<char16_t> buffer16;
+
+    buffer.resize(simdutf::base64_length_from_binary(len));
+    std::vector<char> back(len);
+    std::mt19937 gen((std::mt19937::result_type)(seed));
+    std::uniform_int_distribution<int> byte_generator{0, 255};
+    for (size_t trial = 0; trial < 10; trial++) {
+      for (size_t i = 0; i < len; i++) {
+        source[i] = byte_generator(gen);
+      }
+      size_t size = implementation.binary_to_base64(
+          source.data(), source.size(), buffer.data(), simdutf::base64_url);
+      buffer.resize(size);
+      for (size_t i = 0; i < 5; i++) {
+        add_garbage(buffer, gen, to_base64url_value);
+      }
+      buffer16.resize(buffer.size());
+      for (size_t i = 0; i < buffer.size(); i++) {
+        buffer16[i] = buffer[i];
+      }
+      ASSERT_EQUAL(
+          size, simdutf::base64_length_from_binary(len, simdutf::base64_url));
+      simdutf::result r = implementation.base64_to_binary(
+          buffer16.data(), buffer16.size(), back.data(),
+          simdutf::base64_url_accept_garbage);
       ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
       ASSERT_EQUAL(r.count, len);
       if (back != source) {
@@ -1508,7 +3149,7 @@ TEST(aborted_safe_roundtrip_base64) {
     for (size_t len = offset; len < 1024; len++) {
       std::vector<char> source(len, 0);
       std::vector<char> buffer;
-      buffer.resize(implementation.base64_length_from_binary(len));
+      buffer.resize(simdutf::base64_length_from_binary(len));
       std::mt19937 gen((std::mt19937::result_type)(seed));
       std::uniform_int_distribution<int> byte_generator{0, 255};
       for (size_t trial = 0; trial < 10; trial++) {
@@ -1556,7 +3197,7 @@ TEST(aborted_safe_roundtrip_base64_16) {
       std::vector<char> buffer;
       std::vector<char16_t> buffer16;
 
-      buffer.resize(implementation.base64_length_from_binary(len));
+      buffer.resize(simdutf::base64_length_from_binary(len));
       std::vector<char> back(len);
       std::mt19937 gen((std::mt19937::result_type)(seed));
       std::uniform_int_distribution<int> byte_generator{0, 255};
@@ -1571,7 +3212,7 @@ TEST(aborted_safe_roundtrip_base64_16) {
         for (size_t i = 0; i < buffer.size(); i++) {
           buffer16[i] = buffer[i];
         }
-        ASSERT_EQUAL(size, implementation.base64_length_from_binary(len));
+        ASSERT_EQUAL(size, simdutf::base64_length_from_binary(len));
         size_t limited_length = len - offset; // intentionally too little
         back.resize(limited_length);
         back.shrink_to_fit();
@@ -1605,7 +3246,7 @@ TEST(aborted_safe_roundtrip_base64_with_spaces) {
     for (size_t len = offset; len < 1024; len++) {
       std::vector<char> source(len, 0);
       std::vector<char> buffer;
-      buffer.resize(implementation.base64_length_from_binary(len));
+      buffer.resize(simdutf::base64_length_from_binary(len));
       std::mt19937 gen((std::mt19937::result_type)(seed));
       std::uniform_int_distribution<int> byte_generator{0, 255};
       for (size_t trial = 0; trial < 10; trial++) {
@@ -1655,7 +3296,7 @@ TEST(aborted_safe_roundtrip_base64_16_with_spaces) {
       std::vector<char> buffer;
       std::vector<char16_t> buffer16;
 
-      buffer.resize(implementation.base64_length_from_binary(len));
+      buffer.resize(simdutf::base64_length_from_binary(len));
       std::vector<char> back(len);
       std::mt19937 gen((std::mt19937::result_type)(seed));
       std::uniform_int_distribution<int> byte_generator{0, 255};
@@ -1673,7 +3314,7 @@ TEST(aborted_safe_roundtrip_base64_16_with_spaces) {
         for (size_t i = 0; i < buffer.size(); i++) {
           buffer16[i] = buffer[i];
         }
-        ASSERT_EQUAL(size, implementation.base64_length_from_binary(len));
+        ASSERT_EQUAL(size, simdutf::base64_length_from_binary(len));
         size_t limited_length = len - offset; // intentionally too little
         back.resize(limited_length);
         back.shrink_to_fit();
@@ -1706,7 +3347,7 @@ TEST(streaming_base64_roundtrip) {
   size_t len = 2048;
   std::vector<char> source(len, 0);
   std::vector<char> buffer;
-  buffer.resize(implementation.base64_length_from_binary(len));
+  buffer.resize(simdutf::base64_length_from_binary(len));
   std::mt19937 gen((std::mt19937::result_type)(seed));
   std::uniform_int_distribution<int> byte_generator{0, 255};
   for (size_t i = 0; i < len; i++) {
@@ -1714,31 +3355,41 @@ TEST(streaming_base64_roundtrip) {
   }
   size_t size = implementation.binary_to_base64(source.data(), source.size(),
                                                 buffer.data());
-  buffer.resize(size);
   for (size_t window = 16; window <= 2048; window += 7) {
+    buffer.resize(size);
     // build a buffer with enough space to receive the decoded base64
     std::vector<char> back(len);
     size_t outpos = 0;
-    for (size_t pos = 0; pos < buffer.size(); pos += window) {
+    size_t pos = 0;
+    for (; pos < buffer.size();) {
       size_t count = std::min(window, buffer.size() - pos);
-      simdutf::result r = implementation.base64_to_binary(
-          buffer.data() + pos, count, back.data() + outpos);
-      ASSERT_TRUE(r.error != simdutf::error_code::INVALID_BASE64_CHARACTER);
-      if (count + pos == buffer.size()) {
-        // We must check that the last call to base64_to_binary did not
-        // end with an BASE64_INPUT_REMAINDER error.
-        ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
-      } else {
-        size_t tail_bytes_to_reprocess = 0;
-        if (r.error == simdutf::error_code::BASE64_INPUT_REMAINDER) {
-          tail_bytes_to_reprocess = 1;
-        } else {
-          tail_bytes_to_reprocess = (r.count % 3) == 0 ? 0 : (r.count % 3) + 1;
-        }
-        pos -= tail_bytes_to_reprocess;
-        r.count -= (r.count % 3);
+
+      simdutf::full_result r = implementation.base64_to_binary_details(
+          buffer.data() + pos, count, back.data() + outpos,
+          simdutf::base64_default,
+          simdutf::last_chunk_handling_options::only_full_chunks);
+      ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
+      ASSERT_TRUE(r.input_count <= count);
+      ASSERT_TRUE(r.output_count <= back.size() - outpos);
+      ASSERT_TRUE(r.output_count % 3 == 0);
+      ASSERT_TRUE(r.input_count % 4 == 0);
+
+      outpos += r.output_count;
+      pos += r.input_count;
+      if (r.input_count == 0) {
+        break; // no more input
       }
-      outpos += r.count;
+    }
+    if (pos < buffer.size()) {
+      // we have a remainder
+
+      simdutf::full_result r = implementation.base64_to_binary_details(
+          buffer.data() + pos, buffer.size() - pos, back.data() + outpos,
+          simdutf::base64_default,
+          simdutf::last_chunk_handling_options::strict);
+      ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
+      outpos += r.output_count;
+      pos += r.input_count;
     }
     back.resize(outpos);
     ASSERT_TRUE(back == source);
@@ -1804,14 +3455,45 @@ TEST(readme_safe) {
   ASSERT_EQUAL(limited_length2 + limited_length, (len + 3) / 4 * 3);
 }
 
+#if SIMDUTF_SPAN
+TEST(base64_to_binary_safe_span_api_char) {
+  const std::string input{"QWJyYWNhZGFicmEh"};
+  const std::string expected_output{"Abracadabra!"};
+  std::string output(expected_output.size() + 4, '\0');
+  const auto [ret, outlen] = simdutf::base64_to_binary_safe(input, output);
+  ASSERT_EQUAL(ret.error, simdutf::SUCCESS);
+  ASSERT_EQUAL(ret.count, 16); // amount of consumed input
+  ASSERT_EQUAL(outlen, 12);    // how much was written to output
+}
+
+TEST(base64_to_binary_safe_span_api_char16) {
+  const std::u16string input{u"QWJyYWNhZGFicmEh"};
+  const std::string expected_output{"Abracadabra!"};
+  std::string output(expected_output.size() + 4, '\0');
+  const auto [ret, outlen] = simdutf::base64_to_binary_safe(input, output);
+  ASSERT_EQUAL(ret.error, simdutf::SUCCESS);
+  ASSERT_EQUAL(ret.count, 16); // amount of consumed input
+  ASSERT_EQUAL(outlen, 12);    // how much was written to output
+}
+
+TEST(binary_to_base64_with_lines_span_api_char) {
+  const std::string input{"Abracadabra!"};
+  const std::string expected_output{"QWJyY\nWNhZG\nFicmE\nh"};
+  std::string output(expected_output.size() + 4, '\0');
+  const auto outlen = simdutf::binary_to_base64_with_lines(input, output, 5);
+  ASSERT_EQUAL(outlen,
+               expected_output.size()); // how much was written to output
+  output.resize(outlen);
+  ASSERT_EQUAL(expected_output, output);
+}
+
+#endif
+
 int main(int argc, char *argv[]) {
-  if (argc == 2) {
-    try {
-      seed = std::stoi(argv[1]);
-    } catch (const std::exception &e) {
-      printf("%s\n", e.what());
-      return EXIT_FAILURE;
-    }
-  }
-  return simdutf::test::main(argc, argv);
+  const auto cmdline = simdutf::test::CommandLine::parse(argc, argv);
+  seed = cmdline.seed;
+
+  simdutf::test::run(cmdline);
+
+  return 0;
 }

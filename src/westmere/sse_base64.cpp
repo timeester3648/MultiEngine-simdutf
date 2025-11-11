@@ -25,6 +25,8 @@
  * Nick Kopp. 2013. Base64 Encoding on a GPU.
  * https://www.codeproject.com/Articles/276993/Base-Encoding-on-a-GPU. (2013).
  */
+
+// --- encoding ----------------------------------------------------
 template <bool base64_url> __m128i lookup_pshufb_improved(const __m128i input) {
   // credit: Wojciech Muła
   // reduce  0..51 -> 0
@@ -56,9 +58,47 @@ template <bool base64_url> __m128i lookup_pshufb_improved(const __m128i input) {
   return _mm_add_epi8(result, input);
 }
 
-template <bool isbase64url>
-size_t encode_base64(char *dst, const char *src, size_t srclen,
-                     base64_options options) {
+inline __m128i insert_line_feed16(__m128i input, size_t K) {
+  static const uint8_t shuffle_masks[16][16] = {
+      {0x80, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 0x80, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 0x80, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 0x80, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 0x80, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 0x80, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 0x80, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 0x80, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 0x80, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 0x80, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0x80, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0x80, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0x80, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 0x80, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 0x80, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 0x80}};
+  // Prepare a vector with '\n' (0x0A)
+  __m128i line_feed_vector = _mm_set1_epi8('\n');
+
+  // Load the precomputed shuffle mask for K (index K-1)
+  __m128i mask = _mm_loadu_si128((__m128i *)shuffle_masks[K]);
+  __m128i lf_pos = _mm_cmpeq_epi8(mask, _mm_set1_epi8(static_cast<char>(0x80)));
+
+  // Perform the shuffle to reposition the K bytes
+  __m128i shuffled = _mm_shuffle_epi8(input, mask);
+
+  // Blend with line_feed_vector to insert '\n' at the appropriate positions
+  __m128i result = _mm_blendv_epi8(shuffled, line_feed_vector, lf_pos);
+
+  return result;
+}
+template <bool isbase64url, bool use_lines>
+size_t encode_base64_impl(char *dst, const char *src, size_t srclen,
+                          base64_options options,
+                          size_t line_length = simdutf::default_line_length) {
+  size_t offset = 0;
+  if (line_length < 4) {
+    line_length = 4; // We do not support line_length less than 4
+  }
   // credit: Wojciech Muła
   // SSE (lookup: pshufb improved unrolled)
   const uint8_t *input = (const uint8_t *)src;
@@ -108,21 +148,98 @@ size_t encode_base64(char *dst, const char *src, size_t srclen,
     const __m128i input2 = _mm_or_si128(t1_2, t3_2);
     const __m128i input3 = _mm_or_si128(t1_3, t3_3);
 
-    _mm_storeu_si128(reinterpret_cast<__m128i *>(out),
-                     lookup_pshufb_improved<isbase64url>(input0));
-    out += 16;
+    const __m128i t0 = lookup_pshufb_improved<isbase64url>(input0);
+    const __m128i t1 = lookup_pshufb_improved<isbase64url>(input1);
+    const __m128i t2 = lookup_pshufb_improved<isbase64url>(input2);
+    const __m128i t3 = lookup_pshufb_improved<isbase64url>(input3);
 
-    _mm_storeu_si128(reinterpret_cast<__m128i *>(out),
-                     lookup_pshufb_improved<isbase64url>(input1));
-    out += 16;
+    if (use_lines) {
+      if (line_length >= 64) { // fast path
+        if (offset + 64 > line_length) {
+          size_t location_end = line_length - offset;
+          size_t to_move = 64 - location_end;
+          if (location_end < 16) {
+            // We can store or extract store. See below.
+            //_mm_storeu_si128(reinterpret_cast<__m128i *>(out+1), t0);
+            _mm_storeu_si128(reinterpret_cast<__m128i *>(out),
+                             insert_line_feed16(t0, location_end));
+            out[16] = static_cast<uint8_t>(_mm_extract_epi8(t0, 15));
+            out += 17;
+          } else {
+            _mm_storeu_si128(reinterpret_cast<__m128i *>(out), t0);
+            out += 16;
+          }
+          if (location_end >= 16 && location_end < 32) {
+            // We can store or extract store. See below.
+            //_mm_storeu_si128(reinterpret_cast<__m128i *>(out+1), t1);
+            _mm_storeu_si128(reinterpret_cast<__m128i *>(out),
+                             insert_line_feed16(t1, location_end - 16));
+            out[16] = static_cast<uint8_t>(_mm_extract_epi8(t1, 15));
+            out += 17;
+          } else {
+            _mm_storeu_si128(reinterpret_cast<__m128i *>(out), t1);
+            out += 16;
+          }
+          if (location_end >= 32 && location_end < 48) {
+            // We can store or extract store. See below.
+            //_mm_storeu_si128(reinterpret_cast<__m128i *>(out+1), t2);
+            _mm_storeu_si128(reinterpret_cast<__m128i *>(out),
+                             insert_line_feed16(t2, location_end - 32));
+            out[16] = static_cast<uint8_t>(_mm_extract_epi8(t2, 15));
+            out += 17;
+          } else {
+            _mm_storeu_si128(reinterpret_cast<__m128i *>(out), t2);
+            out += 16;
+          }
+          if (location_end >= 48) {
+            // We can store or extract store. See below.
+            //_mm_storeu_si128(reinterpret_cast<__m128i *>(out+1), t3);
+            _mm_storeu_si128(reinterpret_cast<__m128i *>(out),
+                             insert_line_feed16(t3, location_end - 48));
+            out[16] = static_cast<uint8_t>(_mm_extract_epi8(t3, 15));
+            out += 17;
+          } else {
+            _mm_storeu_si128(reinterpret_cast<__m128i *>(out), t3);
+            out += 16;
+          }
+          offset = to_move;
+        } else {
 
-    _mm_storeu_si128(reinterpret_cast<__m128i *>(out),
-                     lookup_pshufb_improved<isbase64url>(input2));
-    out += 16;
-
-    _mm_storeu_si128(reinterpret_cast<__m128i *>(out),
-                     lookup_pshufb_improved<isbase64url>(input3));
-    out += 16;
+          _mm_storeu_si128(reinterpret_cast<__m128i *>(out), t0);
+          _mm_storeu_si128(reinterpret_cast<__m128i *>(out + 16), t1);
+          _mm_storeu_si128(reinterpret_cast<__m128i *>(out + 32), t2);
+          _mm_storeu_si128(reinterpret_cast<__m128i *>(out + 48), t3);
+          offset += 64;
+          out += 64;
+        }
+      } else { // slow path
+        // could be optimized
+        uint8_t buffer[64];
+        _mm_storeu_si128(reinterpret_cast<__m128i *>(buffer), t0);
+        _mm_storeu_si128(reinterpret_cast<__m128i *>(buffer + 16), t1);
+        _mm_storeu_si128(reinterpret_cast<__m128i *>(buffer + 32), t2);
+        _mm_storeu_si128(reinterpret_cast<__m128i *>(buffer + 48), t3);
+        std::memcpy(out, buffer, 64);
+        size_t out_pos = 0;
+        size_t local_offset = offset;
+        for (size_t j = 0; j < 64;) {
+          if (local_offset == line_length) {
+            out[out_pos++] = '\n';
+            local_offset = 0;
+          }
+          out[out_pos++] = buffer[j++];
+          local_offset++;
+        }
+        offset = local_offset;
+        out += out_pos;
+      }
+    } else {
+      _mm_storeu_si128(reinterpret_cast<__m128i *>(out), t0);
+      _mm_storeu_si128(reinterpret_cast<__m128i *>(out + 16), t1);
+      _mm_storeu_si128(reinterpret_cast<__m128i *>(out + 32), t2);
+      _mm_storeu_si128(reinterpret_cast<__m128i *>(out + 48), t3);
+      out += 64;
+    }
   }
   for (; i + 16 <= srclen; i += 12) {
 
@@ -160,15 +277,61 @@ size_t encode_base64(char *dst, const char *src, size_t srclen,
     // res   = [00dddddd|00cccccc|00bbbbbb|00aaaaaa] = t1 | t3
     const __m128i indices = _mm_or_si128(t1, t3);
 
-    _mm_storeu_si128(reinterpret_cast<__m128i *>(out),
-                     lookup_pshufb_improved<isbase64url>(indices));
-    out += 16;
-  }
+    const __m128i T0 = lookup_pshufb_improved<isbase64url>(indices);
 
-  return i / 3 * 4 + scalar::base64::tail_encode_base64((char *)out, src + i,
-                                                        srclen - i, options);
+    _mm_storeu_si128(reinterpret_cast<__m128i *>(out), T0);
+
+    if (use_lines) {
+      if (line_length >= 16) { // fast path
+        _mm_storeu_si128(reinterpret_cast<__m128i *>(out), T0);
+        if (offset + 16 > line_length) {
+          size_t location_end = line_length - offset;
+          size_t to_move = 16 - location_end;
+          std::memmove(out + location_end + 1, out + location_end, to_move);
+          out[location_end] = '\n';
+          offset = to_move;
+          out += 16 + 1;
+        } else {
+          offset += 16;
+          out += 16;
+        }
+      } else { // slow path
+        // could be optimized
+        uint8_t buffer[16];
+        _mm_storeu_si128(reinterpret_cast<__m128i *>(buffer), T0);
+        size_t out_pos = 0;
+        size_t local_offset = offset;
+        for (size_t j = 0; j < 16;) {
+          if (local_offset == line_length) {
+            out[out_pos++] = '\n';
+            local_offset = 0;
+          }
+          out[out_pos++] = buffer[j++];
+          local_offset++;
+        }
+        offset = local_offset;
+        out += out_pos;
+      }
+    } else {
+      _mm_storeu_si128(reinterpret_cast<__m128i *>(out), T0);
+      out += 16;
+    }
+  }
+  return ((char *)out - (char *)dst) +
+         scalar::base64::tail_encode_base64_impl<use_lines>(
+             (char *)out, src + i, srclen - i, options, line_length, offset);
 }
-static inline void compress(__m128i data, uint16_t mask, char *output) {
+
+template <bool isbase64url>
+size_t encode_base64(char *dst, const char *src, size_t srclen,
+                     base64_options options) {
+  return encode_base64_impl<isbase64url, false>(dst, src, srclen, options);
+}
+
+// --- decoding -----------------------------------------------
+
+static simdutf_really_inline void compress(__m128i data, uint16_t mask,
+                                           char *output) {
   if (mask == 0) {
     _mm_storeu_si128(reinterpret_cast<__m128i *>(output), data);
     return;
@@ -202,140 +365,7 @@ static inline void compress(__m128i data, uint16_t mask, char *output) {
   _mm_storeu_si128(reinterpret_cast<__m128i *>(output), answer);
 }
 
-struct block64 {
-  __m128i chunks[4];
-};
-
-template <bool base64_url>
-static inline uint16_t to_base64_mask(__m128i *src, bool *error) {
-  const __m128i ascii_space_tbl =
-      _mm_setr_epi8(0x20, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x9, 0xa, 0x0,
-                    0xc, 0xd, 0x0, 0x0);
-  // credit: aqrit
-  __m128i delta_asso;
-  if (base64_url) {
-    delta_asso = _mm_setr_epi8(0x1, 0x1, 0x1, 0x1, 0x1, 0x1, 0x1, 0x1, 0x0, 0x0,
-                               0x0, 0x0, 0x0, 0xF, 0x0, 0xF);
-  } else {
-
-    delta_asso = _mm_setr_epi8(0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
-                               0x00, 0x00, 0x00, 0x00, 0x00, 0x0F, 0x00, 0x0F);
-  }
-  __m128i delta_values;
-  if (base64_url) {
-    delta_values = _mm_setr_epi8(0x0, 0x0, 0x0, 0x13, 0x4, uint8_t(0xBF),
-                                 uint8_t(0xBF), uint8_t(0xB9), uint8_t(0xB9),
-                                 0x0, 0x11, uint8_t(0xC3), uint8_t(0xBF),
-                                 uint8_t(0xE0), uint8_t(0xB9), uint8_t(0xB9));
-  } else {
-
-    delta_values =
-        _mm_setr_epi8(int8_t(0x00), int8_t(0x00), int8_t(0x00), int8_t(0x13),
-                      int8_t(0x04), int8_t(0xBF), int8_t(0xBF), int8_t(0xB9),
-                      int8_t(0xB9), int8_t(0x00), int8_t(0x10), int8_t(0xC3),
-                      int8_t(0xBF), int8_t(0xBF), int8_t(0xB9), int8_t(0xB9));
-  }
-  __m128i check_asso;
-  if (base64_url) {
-    check_asso = _mm_setr_epi8(0xD, 0x1, 0x1, 0x1, 0x1, 0x1, 0x1, 0x1, 0x1, 0x1,
-                               0x3, 0x7, 0xB, 0xE, 0xB, 0x6);
-  } else {
-
-    check_asso = _mm_setr_epi8(0x0D, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
-                               0x01, 0x01, 0x03, 0x07, 0x0B, 0x0B, 0x0B, 0x0F);
-  }
-  __m128i check_values;
-  if (base64_url) {
-    check_values = _mm_setr_epi8(uint8_t(0x80), uint8_t(0x80), uint8_t(0x80),
-                                 uint8_t(0x80), uint8_t(0xCF), uint8_t(0xBF),
-                                 uint8_t(0xB6), uint8_t(0xA6), uint8_t(0xB5),
-                                 uint8_t(0xA1), 0x0, uint8_t(0x80), 0x0,
-                                 uint8_t(0x80), 0x0, uint8_t(0x80));
-  } else {
-
-    check_values =
-        _mm_setr_epi8(int8_t(0x80), int8_t(0x80), int8_t(0x80), int8_t(0x80),
-                      int8_t(0xCF), int8_t(0xBF), int8_t(0xD5), int8_t(0xA6),
-                      int8_t(0xB5), int8_t(0x86), int8_t(0xD1), int8_t(0x80),
-                      int8_t(0xB1), int8_t(0x80), int8_t(0x91), int8_t(0x80));
-  }
-  const __m128i shifted = _mm_srli_epi32(*src, 3);
-
-  const __m128i delta_hash =
-      _mm_avg_epu8(_mm_shuffle_epi8(delta_asso, *src), shifted);
-  const __m128i check_hash =
-      _mm_avg_epu8(_mm_shuffle_epi8(check_asso, *src), shifted);
-
-  const __m128i out =
-      _mm_adds_epi8(_mm_shuffle_epi8(delta_values, delta_hash), *src);
-  const __m128i chk =
-      _mm_adds_epi8(_mm_shuffle_epi8(check_values, check_hash), *src);
-  const int mask = _mm_movemask_epi8(chk);
-  if (mask) {
-    __m128i ascii_space =
-        _mm_cmpeq_epi8(_mm_shuffle_epi8(ascii_space_tbl, *src), *src);
-    *error |= (mask != _mm_movemask_epi8(ascii_space));
-  }
-  *src = out;
-  return (uint16_t)mask;
-}
-
-template <bool base64_url>
-static inline uint64_t to_base64_mask(block64 *b, bool *error) {
-  *error = 0;
-  uint64_t m0 = to_base64_mask<base64_url>(&b->chunks[0], error);
-  uint64_t m1 = to_base64_mask<base64_url>(&b->chunks[1], error);
-  uint64_t m2 = to_base64_mask<base64_url>(&b->chunks[2], error);
-  uint64_t m3 = to_base64_mask<base64_url>(&b->chunks[3], error);
-  return m0 | (m1 << 16) | (m2 << 32) | (m3 << 48);
-}
-
-static inline void copy_block(block64 *b, char *output) {
-  _mm_storeu_si128(reinterpret_cast<__m128i *>(output), b->chunks[0]);
-  _mm_storeu_si128(reinterpret_cast<__m128i *>(output + 16), b->chunks[1]);
-  _mm_storeu_si128(reinterpret_cast<__m128i *>(output + 32), b->chunks[2]);
-  _mm_storeu_si128(reinterpret_cast<__m128i *>(output + 48), b->chunks[3]);
-}
-
-static inline uint64_t compress_block(block64 *b, uint64_t mask, char *output) {
-  uint64_t nmask = ~mask;
-  compress(b->chunks[0], uint16_t(mask), output);
-  compress(b->chunks[1], uint16_t(mask >> 16),
-           output + _mm_popcnt_u64(nmask & 0xFFFF));
-  compress(b->chunks[2], uint16_t(mask >> 32),
-           output + _mm_popcnt_u64(nmask & 0xFFFFFFFF));
-  compress(b->chunks[3], uint16_t(mask >> 48),
-           output + _mm_popcnt_u64(nmask & 0xFFFFFFFFFFFFULL));
-  return _mm_popcnt_u64(nmask);
-}
-
-// The caller of this function is responsible to ensure that there are 64 bytes
-// available from reading at src. The data is read into a block64 structure.
-static inline void load_block(block64 *b, const char *src) {
-  b->chunks[0] = _mm_loadu_si128(reinterpret_cast<const __m128i *>(src));
-  b->chunks[1] = _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + 16));
-  b->chunks[2] = _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + 32));
-  b->chunks[3] = _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + 48));
-}
-
-// The caller of this function is responsible to ensure that there are 128 bytes
-// available from reading at src. The data is read into a block64 structure.
-static inline void load_block(block64 *b, const char16_t *src) {
-  __m128i m1 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(src));
-  __m128i m2 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + 8));
-  __m128i m3 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + 16));
-  __m128i m4 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + 24));
-  __m128i m5 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + 32));
-  __m128i m6 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + 40));
-  __m128i m7 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + 48));
-  __m128i m8 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + 56));
-  b->chunks[0] = _mm_packus_epi16(m1, m2);
-  b->chunks[1] = _mm_packus_epi16(m3, m4);
-  b->chunks[2] = _mm_packus_epi16(m5, m6);
-  b->chunks[3] = _mm_packus_epi16(m7, m8);
-}
-
-static inline void base64_decode(char *out, __m128i str) {
+static simdutf_really_inline void base64_decode(char *out, __m128i str) {
   // credit: aqrit
 
   const __m128i pack_shuffle =
@@ -348,6 +378,7 @@ static inline void base64_decode(char *out, __m128i str) {
   // this writes 16 bytes, but we only need 12.
   _mm_storeu_si128((__m128i *)out, t2);
 }
+
 // decode 64 bytes and output 48 bytes
 static inline void base64_decode_block(char *out, const char *src) {
   base64_decode(out, _mm_loadu_si128(reinterpret_cast<const __m128i *>(src)));
@@ -358,6 +389,7 @@ static inline void base64_decode_block(char *out, const char *src) {
   base64_decode(out + 36,
                 _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + 48)));
 }
+
 static inline void base64_decode_block_safe(char *out, const char *src) {
   base64_decode(out, _mm_loadu_si128(reinterpret_cast<const __m128i *>(src)));
   base64_decode(out + 12,
@@ -369,201 +401,272 @@ static inline void base64_decode_block_safe(char *out, const char *src) {
                 _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + 48)));
   std::memcpy(out + 36, buffer, 12);
 }
-static inline void base64_decode_block(char *out, block64 *b) {
-  base64_decode(out, b->chunks[0]);
-  base64_decode(out + 12, b->chunks[1]);
-  base64_decode(out + 24, b->chunks[2]);
-  base64_decode(out + 36, b->chunks[3]);
-}
-static inline void base64_decode_block_safe(char *out, block64 *b) {
-  base64_decode(out, b->chunks[0]);
-  base64_decode(out + 12, b->chunks[1]);
-  base64_decode(out + 24, b->chunks[2]);
-  char buffer[16];
-  base64_decode(buffer, b->chunks[3]);
-  std::memcpy(out + 36, buffer, 12);
-}
 
-template <bool base64_url, typename chartype>
-result compress_decode_base64(char *dst, const chartype *src, size_t srclen,
-                              base64_options options,
-                              last_chunk_handling_options last_chunk_options) {
-  const uint8_t *to_base64 = base64_url ? tables::base64::to_base64_url_value
-                                        : tables::base64::to_base64_value;
-  size_t equallocation =
-      srclen; // location of the first padding character if any
-  // skip trailing spaces
-  while (srclen > 0 && scalar::base64::is_eight_byte(src[srclen - 1]) &&
-         to_base64[uint8_t(src[srclen - 1])] == 64) {
-    srclen--;
-  }
-  size_t equalsigns = 0;
-  if (srclen > 0 && src[srclen - 1] == '=') {
-    equallocation = srclen - 1;
-    srclen--;
-    equalsigns = 1;
-    // skip trailing spaces
-    while (srclen > 0 && scalar::base64::is_eight_byte(src[srclen - 1]) &&
-           to_base64[uint8_t(src[srclen - 1])] == 64) {
-      srclen--;
-    }
-    if (srclen > 0 && src[srclen - 1] == '=') {
-      equallocation = srclen - 1;
-      srclen--;
-      equalsigns = 2;
-    }
-  }
-  if (srclen == 0) {
-    if (equalsigns > 0) {
-      return {INVALID_BASE64_CHARACTER, equallocation};
-    }
-    return {SUCCESS, 0};
-  }
-  char *end_of_safe_64byte_zone =
-      (srclen + 3) / 4 * 3 >= 63 ? dst + (srclen + 3) / 4 * 3 - 63 : dst;
+// --- decoding - base64 class --------------------------------
 
-  const chartype *const srcinit = src;
-  const char *const dstinit = dst;
-  const chartype *const srcend = src + srclen;
+class block64 {
+  __m128i chunks[4];
 
-  constexpr size_t block_size = 6;
-  static_assert(block_size >= 2, "block should of size 2 or more");
-  char buffer[block_size * 64];
-  char *bufferptr = buffer;
-  if (srclen >= 64) {
-    const chartype *const srcend64 = src + srclen - 64;
-    while (src <= srcend64) {
-      block64 b;
-      load_block(&b, src);
-      src += 64;
-      bool error = false;
-      uint64_t badcharmask = to_base64_mask<base64_url>(&b, &error);
-      if (error) {
-        src -= 64;
-        while (src < srcend && scalar::base64::is_eight_byte(*src) &&
-               to_base64[uint8_t(*src)] <= 64) {
-          src++;
-        }
-        return {error_code::INVALID_BASE64_CHARACTER, size_t(src - srcinit)};
-      }
-      if (badcharmask != 0) {
-        // optimization opportunity: check for simple masks like those made of
-        // continuous 1s followed by continuous 0s. And masks containing a
-        // single bad character.
-        bufferptr += compress_block(&b, badcharmask, bufferptr);
-      } else if (bufferptr != buffer) {
-        copy_block(&b, bufferptr);
-        bufferptr += 64;
-      } else {
-        if (dst >= end_of_safe_64byte_zone) {
-          base64_decode_block_safe(dst, &b);
-        } else {
-          base64_decode_block(dst, &b);
-        }
-        dst += 48;
-      }
-      if (bufferptr >= (block_size - 1) * 64 + buffer) {
-        for (size_t i = 0; i < (block_size - 2); i++) {
-          base64_decode_block(dst, buffer + i * 64);
-          dst += 48;
-        }
-        if (dst >= end_of_safe_64byte_zone) {
-          base64_decode_block_safe(dst, buffer + (block_size - 2) * 64);
-        } else {
-          base64_decode_block(dst, buffer + (block_size - 2) * 64);
-        }
-        dst += 48;
-        std::memcpy(buffer, buffer + (block_size - 1) * 64,
-                    64); // 64 might be too much
-        bufferptr -= (block_size - 1) * 64;
-      }
-    }
+public:
+  // The caller of this function is responsible to ensure that there are 64
+  // bytes available from reading at src.
+  simdutf_really_inline block64(const char *src) {
+    chunks[0] = _mm_loadu_si128(reinterpret_cast<const __m128i *>(src));
+    chunks[1] = _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + 16));
+    chunks[2] = _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + 32));
+    chunks[3] = _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + 48));
   }
 
-  char *buffer_start = buffer;
-  // Optimization note: if this is almost full, then it is worth our
-  // time, otherwise, we should just decode directly.
-  int last_block = (int)((bufferptr - buffer_start) % 64);
-  if (last_block != 0 && srcend - src + last_block >= 64) {
-    while ((bufferptr - buffer_start) % 64 != 0 && src < srcend) {
-      uint8_t val = to_base64[uint8_t(*src)];
-      *bufferptr = char(val);
-      if (!scalar::base64::is_eight_byte(*src) || val > 64) {
-        return {error_code::INVALID_BASE64_CHARACTER, size_t(src - srcinit)};
-      }
-      bufferptr += (val <= 63);
-      src++;
-    }
+public:
+  // The caller of this function is responsible to ensure that there are 128
+  // bytes available from reading at src. The data is read into a block64
+  // structure.
+  simdutf_really_inline block64(const char16_t *src) {
+    const auto m1 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(src));
+    const auto m2 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + 8));
+    const auto m3 =
+        _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + 16));
+    const auto m4 =
+        _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + 24));
+    const auto m5 =
+        _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + 32));
+    const auto m6 =
+        _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + 40));
+    const auto m7 =
+        _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + 48));
+    const auto m8 =
+        _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + 56));
+    chunks[0] = _mm_packus_epi16(m1, m2);
+    chunks[1] = _mm_packus_epi16(m3, m4);
+    chunks[2] = _mm_packus_epi16(m5, m6);
+    chunks[3] = _mm_packus_epi16(m7, m8);
   }
 
-  for (; buffer_start + 64 <= bufferptr; buffer_start += 64) {
-    if (dst >= end_of_safe_64byte_zone) {
-      base64_decode_block_safe(dst, buffer_start);
+public:
+  simdutf_really_inline void copy_block(char *output) {
+    _mm_storeu_si128(reinterpret_cast<__m128i *>(output), chunks[0]);
+    _mm_storeu_si128(reinterpret_cast<__m128i *>(output + 16), chunks[1]);
+    _mm_storeu_si128(reinterpret_cast<__m128i *>(output + 32), chunks[2]);
+    _mm_storeu_si128(reinterpret_cast<__m128i *>(output + 48), chunks[3]);
+  }
+
+public:
+  simdutf_really_inline uint64_t compress_block(uint64_t mask, char *output) {
+    if (is_power_of_two(mask)) {
+      return compress_block_single(mask, output);
+    }
+
+    uint64_t nmask = ~mask;
+    compress(chunks[0], uint16_t(mask), output);
+    compress(chunks[1], uint16_t(mask >> 16),
+             output + count_ones(nmask & 0xFFFF));
+    compress(chunks[2], uint16_t(mask >> 32),
+             output + count_ones(nmask & 0xFFFFFFFF));
+    compress(chunks[3], uint16_t(mask >> 48),
+             output + count_ones(nmask & 0xFFFFFFFFFFFFULL));
+    return count_ones(nmask);
+  }
+
+private:
+  simdutf_really_inline size_t compress_block_single(uint64_t mask,
+                                                     char *output) {
+    const size_t pos64 = trailing_zeroes(mask);
+    const int8_t pos = pos64 & 0xf;
+    switch (pos64 >> 4) {
+    case 0b00: {
+      const __m128i v0 = _mm_set1_epi8(char(pos - 1));
+      const __m128i v1 =
+          _mm_setr_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+      const __m128i v2 = _mm_cmpgt_epi8(v1, v0);
+      const __m128i sh = _mm_sub_epi8(v1, v2);
+      const __m128i compressed = _mm_shuffle_epi8(chunks[0], sh);
+
+      _mm_storeu_si128((__m128i *)(output + 0 * 16), compressed);
+      _mm_storeu_si128((__m128i *)(output + 1 * 16 - 1), chunks[1]);
+      _mm_storeu_si128((__m128i *)(output + 2 * 16 - 1), chunks[2]);
+      _mm_storeu_si128((__m128i *)(output + 3 * 16 - 1), chunks[3]);
+    } break;
+    case 0b01: {
+      _mm_storeu_si128((__m128i *)(output + 0 * 16), chunks[0]);
+
+      const __m128i v0 = _mm_set1_epi8(char(pos - 1));
+      const __m128i v1 =
+          _mm_setr_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+      const __m128i v2 = _mm_cmpgt_epi8(v1, v0);
+      const __m128i sh = _mm_sub_epi8(v1, v2);
+      const __m128i compressed = _mm_shuffle_epi8(chunks[1], sh);
+
+      _mm_storeu_si128((__m128i *)(output + 1 * 16), compressed);
+      _mm_storeu_si128((__m128i *)(output + 2 * 16 - 1), chunks[2]);
+      _mm_storeu_si128((__m128i *)(output + 3 * 16 - 1), chunks[3]);
+    } break;
+    case 0b10: {
+      _mm_storeu_si128((__m128i *)(output + 0 * 16), chunks[0]);
+      _mm_storeu_si128((__m128i *)(output + 1 * 16), chunks[1]);
+
+      const __m128i v0 = _mm_set1_epi8(char(pos - 1));
+      const __m128i v1 =
+          _mm_setr_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+      const __m128i v2 = _mm_cmpgt_epi8(v1, v0);
+      const __m128i sh = _mm_sub_epi8(v1, v2);
+      const __m128i compressed = _mm_shuffle_epi8(chunks[2], sh);
+
+      _mm_storeu_si128((__m128i *)(output + 2 * 16), compressed);
+      _mm_storeu_si128((__m128i *)(output + 3 * 16 - 1), chunks[3]);
+    } break;
+    case 0b11: {
+      _mm_storeu_si128((__m128i *)(output + 0 * 16), chunks[0]);
+      _mm_storeu_si128((__m128i *)(output + 1 * 16), chunks[1]);
+      _mm_storeu_si128((__m128i *)(output + 2 * 16), chunks[2]);
+
+      const __m128i v0 = _mm_set1_epi8(char(pos - 1));
+      const __m128i v1 =
+          _mm_setr_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+      const __m128i v2 = _mm_cmpgt_epi8(v1, v0);
+      const __m128i sh = _mm_sub_epi8(v1, v2);
+      const __m128i compressed = _mm_shuffle_epi8(chunks[3], sh);
+
+      _mm_storeu_si128((__m128i *)(output + 3 * 16), compressed);
+    } break;
+    }
+
+    return 63;
+  }
+
+public:
+  template <bool base64_url, bool ignore_garbage, bool default_or_url>
+  simdutf_really_inline uint64_t to_base64_mask(uint64_t *error) {
+    uint32_t err0 = 0;
+    uint32_t err1 = 0;
+    uint32_t err2 = 0;
+    uint32_t err3 = 0;
+    uint64_t m0 = to_base64_mask<base64_url, ignore_garbage, default_or_url>(
+        &chunks[0], &err0);
+    uint64_t m1 = to_base64_mask<base64_url, ignore_garbage, default_or_url>(
+        &chunks[1], &err1);
+    uint64_t m2 = to_base64_mask<base64_url, ignore_garbage, default_or_url>(
+        &chunks[2], &err2);
+    uint64_t m3 = to_base64_mask<base64_url, ignore_garbage, default_or_url>(
+        &chunks[3], &err3);
+    if (!ignore_garbage) {
+      *error = (err0) | ((uint64_t)err1 << 16) | ((uint64_t)err2 << 32) |
+               ((uint64_t)err3 << 48);
+    }
+    return m0 | (m1 << 16) | (m2 << 32) | (m3 << 48);
+  }
+
+private:
+  template <bool base64_url, bool ignore_garbage, bool default_or_url>
+  simdutf_really_inline uint16_t to_base64_mask(__m128i *src, uint32_t *error) {
+    const __m128i ascii_space_tbl =
+        _mm_setr_epi8(0x20, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x9, 0xa,
+                      0x0, 0xc, 0xd, 0x0, 0x0);
+    // credit: aqrit
+    __m128i delta_asso;
+    if (default_or_url) {
+      delta_asso =
+          _mm_setr_epi8(0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00,
+                        0x00, 0x00, 0x00, 0x00, 0x11, 0x00, 0x16);
+    } else if (base64_url) {
+      delta_asso = _mm_setr_epi8(0x1, 0x1, 0x1, 0x1, 0x1, 0x1, 0x1, 0x1, 0x0,
+                                 0x0, 0x0, 0x0, 0x0, 0xF, 0x0, 0xF);
     } else {
-      base64_decode_block(dst, buffer_start);
+      delta_asso =
+          _mm_setr_epi8(0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00,
+                        0x00, 0x00, 0x00, 0x00, 0x0F, 0x00, 0x0F);
     }
-    dst += 48;
-  }
-  if ((bufferptr - buffer_start) % 64 != 0) {
-    while (buffer_start + 4 < bufferptr) {
-      uint32_t triple = ((uint32_t(uint8_t(buffer_start[0])) << 3 * 6) +
-                         (uint32_t(uint8_t(buffer_start[1])) << 2 * 6) +
-                         (uint32_t(uint8_t(buffer_start[2])) << 1 * 6) +
-                         (uint32_t(uint8_t(buffer_start[3])) << 0 * 6))
-                        << 8;
-      triple = scalar::utf32::swap_bytes(triple);
-      std::memcpy(dst, &triple, 4);
+    __m128i delta_values;
+    if (default_or_url) {
+      delta_values = _mm_setr_epi8(
+          uint8_t(0xBF), uint8_t(0xE0), uint8_t(0xB9), uint8_t(0x13),
+          uint8_t(0x04), uint8_t(0xBF), uint8_t(0xBF), uint8_t(0xB9),
+          uint8_t(0xB9), uint8_t(0x00), uint8_t(0xFF), uint8_t(0x11),
+          uint8_t(0xFF), uint8_t(0xBF), uint8_t(0x10), uint8_t(0xB9));
 
-      dst += 3;
-      buffer_start += 4;
-    }
-    if (buffer_start + 4 <= bufferptr) {
-      uint32_t triple = ((uint32_t(uint8_t(buffer_start[0])) << 3 * 6) +
-                         (uint32_t(uint8_t(buffer_start[1])) << 2 * 6) +
-                         (uint32_t(uint8_t(buffer_start[2])) << 1 * 6) +
-                         (uint32_t(uint8_t(buffer_start[3])) << 0 * 6))
-                        << 8;
-      triple = scalar::utf32::swap_bytes(triple);
-      std::memcpy(dst, &triple, 3);
-
-      dst += 3;
-      buffer_start += 4;
-    }
-    // we may have 1, 2 or 3 bytes left and we need to decode them so let us
-    // backtrack
-    int leftover = int(bufferptr - buffer_start);
-    while (leftover > 0) {
-      while (to_base64[uint8_t(*(src - 1))] == 64) {
-        src--;
-      }
-      src--;
-      leftover--;
-    }
-  }
-  if (src < srcend + equalsigns) {
-    result r = scalar::base64::base64_tail_decode(
-        dst, src, srcend - src, equalsigns, options, last_chunk_options);
-    if (r.error == error_code::INVALID_BASE64_CHARACTER) {
-      r.count += size_t(src - srcinit);
-      return r;
+    } else if (base64_url) {
+      delta_values = _mm_setr_epi8(0x0, 0x0, 0x0, 0x13, 0x4, uint8_t(0xBF),
+                                   uint8_t(0xBF), uint8_t(0xB9), uint8_t(0xB9),
+                                   0x0, 0x11, uint8_t(0xC3), uint8_t(0xBF),
+                                   uint8_t(0xE0), uint8_t(0xB9), uint8_t(0xB9));
     } else {
-      r.count += size_t(dst - dstinit);
+      delta_values =
+          _mm_setr_epi8(int8_t(0x00), int8_t(0x00), int8_t(0x00), int8_t(0x13),
+                        int8_t(0x04), int8_t(0xBF), int8_t(0xBF), int8_t(0xB9),
+                        int8_t(0xB9), int8_t(0x00), int8_t(0x10), int8_t(0xC3),
+                        int8_t(0xBF), int8_t(0xBF), int8_t(0xB9), int8_t(0xB9));
     }
-    if (last_chunk_options != stop_before_partial &&
-        r.error == error_code::SUCCESS && equalsigns > 0) {
-      // additional checks
-      if ((r.count % 3 == 0) || ((r.count % 3) + 1 + equalsigns != 4)) {
-        r.error = error_code::INVALID_BASE64_CHARACTER;
-        r.count = equallocation;
-      }
+    __m128i check_asso;
+    if (default_or_url) {
+      check_asso =
+          _mm_setr_epi8(0x0D, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+                        0x01, 0x03, 0x07, 0x0B, 0x0E, 0x0B, 0x06);
+    } else if (base64_url) {
+      check_asso = _mm_setr_epi8(0xD, 0x1, 0x1, 0x1, 0x1, 0x1, 0x1, 0x1, 0x1,
+                                 0x1, 0x3, 0x7, 0xB, 0xE, 0xB, 0x6);
+    } else {
+      check_asso =
+          _mm_setr_epi8(0x0D, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+                        0x01, 0x03, 0x07, 0x0B, 0x0B, 0x0B, 0x0F);
     }
-    return r;
+    __m128i check_values;
+    if (default_or_url) {
+      check_values = _mm_setr_epi8(
+          uint8_t(0x80), uint8_t(0x80), uint8_t(0x80), uint8_t(0x80),
+          uint8_t(0xCF), uint8_t(0xBF), uint8_t(0xD5), uint8_t(0xA6),
+          uint8_t(0xB5), uint8_t(0xA1), uint8_t(0x00), uint8_t(0x80),
+          uint8_t(0x00), uint8_t(0x80), uint8_t(0x00), uint8_t(0x80));
+    } else if (base64_url) {
+      check_values = _mm_setr_epi8(uint8_t(0x80), uint8_t(0x80), uint8_t(0x80),
+                                   uint8_t(0x80), uint8_t(0xCF), uint8_t(0xBF),
+                                   uint8_t(0xB6), uint8_t(0xA6), uint8_t(0xB5),
+                                   uint8_t(0xA1), 0x0, uint8_t(0x80), 0x0,
+                                   uint8_t(0x80), 0x0, uint8_t(0x80));
+    } else {
+      check_values =
+          _mm_setr_epi8(int8_t(0x80), int8_t(0x80), int8_t(0x80), int8_t(0x80),
+                        int8_t(0xCF), int8_t(0xBF), int8_t(0xD5), int8_t(0xA6),
+                        int8_t(0xB5), int8_t(0x86), int8_t(0xD1), int8_t(0x80),
+                        int8_t(0xB1), int8_t(0x80), int8_t(0x91), int8_t(0x80));
+    }
+    const __m128i shifted = _mm_srli_epi32(*src, 3);
+
+    __m128i delta_hash =
+        _mm_avg_epu8(_mm_shuffle_epi8(delta_asso, *src), shifted);
+    if (default_or_url) {
+      delta_hash = _mm_and_si128(delta_hash, _mm_set1_epi8(0xf));
+    }
+    const __m128i check_hash =
+        _mm_avg_epu8(_mm_shuffle_epi8(check_asso, *src), shifted);
+
+    const __m128i out =
+        _mm_adds_epi8(_mm_shuffle_epi8(delta_values, delta_hash), *src);
+    const __m128i chk =
+        _mm_adds_epi8(_mm_shuffle_epi8(check_values, check_hash), *src);
+    const int mask = _mm_movemask_epi8(chk);
+    if (!ignore_garbage && mask) {
+      __m128i ascii_space =
+          _mm_cmpeq_epi8(_mm_shuffle_epi8(ascii_space_tbl, *src), *src);
+      *error = (mask ^ _mm_movemask_epi8(ascii_space));
+    }
+    *src = out;
+    return (uint16_t)mask;
   }
-  if (equalsigns > 0) {
-    if ((size_t(dst - dstinit) % 3 == 0) ||
-        ((size_t(dst - dstinit) % 3) + 1 + equalsigns != 4)) {
-      return {INVALID_BASE64_CHARACTER, equallocation};
-    }
+
+public:
+  simdutf_really_inline void base64_decode_block(char *out) {
+    base64_decode(out, chunks[0]);
+    base64_decode(out + 12, chunks[1]);
+    base64_decode(out + 24, chunks[2]);
+    base64_decode(out + 36, chunks[3]);
   }
-  return {SUCCESS, size_t(dst - dstinit)};
-}
+
+public:
+  simdutf_really_inline void base64_decode_block_safe(char *out) {
+    base64_decode(out, chunks[0]);
+    base64_decode(out + 12, chunks[1]);
+    base64_decode(out + 24, chunks[2]);
+    char buffer[16];
+    base64_decode(buffer, chunks[3]);
+    std::memcpy(out + 36, buffer, 12);
+  }
+};

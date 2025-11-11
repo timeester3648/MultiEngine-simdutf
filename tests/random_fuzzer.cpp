@@ -27,7 +27,7 @@ extern "C" {
 void dump_case() {
   printf("Found a problem: ");
   for (size_t i = 0; i < input.size(); i++) {
-    printf("\\x%02x", input[0] & 0xFF);
+    printf("\\x%02x", input[i] & 0xFF);
   }
   printf("\n");
   std::string name = "random_fuzzer_log.txt";
@@ -36,7 +36,7 @@ void dump_case() {
   log.open(name, std::ios::app);
   const size_t buf_size = 4 * input.size() + 3;
   char *buffer = new char[buf_size];
-  for (int i = 0; i < input.size(); i++) {
+  for (unsigned int i = 0; i < input.size(); i++) {
     SIMDUTF_PUSH_DISABLE_WARNINGS
     SIMDUTF_DISABLE_DEPRECATED_WARNING
     sprintf(buffer + 4 * i + 1, "\\x%02x", input[i]);
@@ -52,6 +52,11 @@ void dump_case() {
 }
 
 void __asan_on_error() { dump_case(); }
+}
+
+template <typename T> bool check_alignment(T *ptr, size_t alignment) {
+  uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
+  return (address % alignment == 0);
 }
 
 template <typename T, bool bigendian = false>
@@ -73,17 +78,19 @@ int validate_tests(const char *databytes, size_t size_in_bytes) {
       result = e->validate_utf8_with_errors(
           reinterpret_cast<const char *>(data), size);
     }
-    if (std::is_same<T, char16_t>::value == true && bigendian) {
+    if (check_alignment(data, 2) && std::is_same<T, char16_t>::value == true &&
+        bigendian) {
       message = "utf16be";
       result = e->validate_utf16be_with_errors(
           reinterpret_cast<const char16_t *>(data), size);
     }
-    if (std::is_same<T, char16_t>::value == true && !bigendian) {
+    if (check_alignment(data, 2) && std::is_same<T, char16_t>::value == true &&
+        !bigendian) {
       message = "utf16le";
       result = e->validate_utf16le_with_errors(
           reinterpret_cast<const char16_t *>(data), size);
     }
-    if (std::is_same<T, char32_t>::value == true) {
+    if (check_alignment(data, 4) && std::is_same<T, char32_t>::value == true) {
       message = "utf32";
       result = e->validate_utf32_with_errors(
           reinterpret_cast<const char32_t *>(data), size);
@@ -555,7 +562,8 @@ bool fuzz_this(const char *data, size_t size) {
         valid_base64++;
         // We expect failure but if we succeed, then we should have a roundtrip.
         back.resize(r.count);
-        std::vector<char> back2(e->base64_length_from_binary(back.size()));
+        std::vector<char> back2(
+            simdutf::base64_length_from_binary(back.size()));
         size_t base64size =
             e->binary_to_base64(back.data(), back.size(), back2.data());
         back2.resize(base64size);
@@ -587,7 +595,8 @@ bool fuzz_this(const char *data, size_t size) {
       if (r.error == simdutf::error_code::SUCCESS) {
         // We expect failure but if we succeed, then we should have a roundtrip.
         back.resize(max_length_needed);
-        std::vector<char> back2(e->base64_length_from_binary(back.size()));
+        std::vector<char> back2(
+            simdutf::base64_length_from_binary(back.size()));
         size_t base64size =
             e->binary_to_base64(back.data(), back.size(), back2.data());
         back2.resize(base64size);
@@ -614,7 +623,7 @@ bool fuzz_this(const char *data, size_t size) {
     /// it, it should always succeed.
     {
       std::vector<char> base64buffer(
-          e->base64_length_from_binary(source.size()));
+          simdutf::base64_length_from_binary(source.size()));
       size_t base64size = e->binary_to_base64(source.data(), source.size(),
                                               base64buffer.data());
       if (base64size != base64buffer.size()) {
@@ -710,7 +719,9 @@ bool fuzz_running(size_t N) {
     for (size_t k = 0; k < size; k++) {
       input[k] = char(distribution(generator));
     }
-    if (!run_test(input.data(), size)) {
+    if (!check_alignment(input.data(), 4)) {
+      fprintf(stderr, "Misaligned input data, skipping\n");
+    } else if (!run_test(input.data(), size)) {
       return false;
     }
   }

@@ -2,6 +2,7 @@
 
 build
 *-build-*
+*build
 
 # Visual Studio Code artifacts
 .vscode/*
@@ -16,6 +17,10 @@ __pycache__
 singleheader/simdutf.cpp
 singleheader/simdutf.h
 singleheader/singleheader.zip
+
+# clangd cache folder
+.cache/clangd/
+corpus/
 
 # exclude project files
 **.sln

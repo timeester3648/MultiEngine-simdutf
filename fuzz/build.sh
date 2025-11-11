@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 #
 # this is the entry point for oss-fuzz.
 #
@@ -16,28 +16,44 @@ if [ -z $SRC ] ; then
     SCRIPTDIR=$(dirname "$0")
     cd "$SCRIPTDIR/.."
 
-    export CXX=/usr/lib/ccache/clang++-18
-    export CXXFLAGS="-fsanitize=fuzzer-no-link,address,undefined -g -O1 -fsanitize-trap=undefined"
+    # Check if /usr/lib/ccache/clang++-18 exists
+    if [ -f /usr/lib/ccache/clang++-18 ]; then
+        export CXX=/usr/lib/ccache/clang++-18
+    else
+        # Check if clang++ exists
+        if command -v clang++ >/dev/null 2>&1; then
+            # Get clang++ version
+            CLANG_VERSION=$(clang++ --version | grep -oP 'version \K[0-9]+' | head -1)
+            
+            # Check if version is less than 18
+            if [ "$CLANG_VERSION" -lt 18 ]; then
+                echo "Warning: clang++ version $CLANG_VERSION is less than 18."
+            fi
+            
+            export CXX=clang++
+        else
+            echo "Error: clang++ not found."
+            exit 1
+        fi
+    fi
+    export CXXFLAGS="-fsanitize=fuzzer-no-link,address,undefined -g -O1 -fsanitize-trap=undefined -DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION=1"
     export LIB_FUZZING_ENGINE="-fsanitize=fuzzer"
     export OUT=fuzz/out
     export WORK=fuzz/work
+    BUILD=$WORK/build
     mkdir -p $OUT $WORK
+    fuzzer_src_files=$(ls fuzz/*.cpp|grep -v -E "fuzz/(reproducer.|main)")
 else
     # invoked from oss fuzz
     cd $SRC/simdutf
-    if [ "$ARCHITECTURE" = "aarch64" -a $(clang++ --version |head -n1 |cut -f3 -d' ' |cut -f1 -d.) -le 14 ]; then
-	# the compiler and stdlib is clang 14 which does not
-	# support ranges well enough to compile the newer fuzzers
-	fuzzer_src_files=fuzz/roundtrip.cpp
-    fi
-fi
-
-if [ -z "$fuzzer_src_files" ] ; then
-  fuzzer_src_files=$(ls fuzz/*.cpp|grep -v -E "fuzz/(reproducer.|main)")
+    # temporary: exclude atomic from oss-fuzz, libc++ 18 used there does not support atomic ref
+    fuzzer_src_files=$(ls fuzz/*.cpp|grep -v -E "fuzz/(reproducer.|main|atomic.)")
+    BUILD=build
 fi
 
 
-cmake -B build -S . \
+
+cmake -B $BUILD -S . \
       -DSIMDUTF_TESTS=Off \
       -DSIMDUTF_TOOLS=Off \
       -DSIMDUTF_FUZZERS=Off \
@@ -45,8 +61,8 @@ cmake -B build -S . \
       -DSIMDUTF_CXX_STANDARD=20 \
       -DSIMDUTF_ALWAYS_INCLUDE_FALLBACK=On
 
-cmake --build build -j$(nproc)
-cmake --install build --prefix $WORK
+cmake --build $BUILD -j$(nproc)
+cmake --install $BUILD --prefix $WORK
 
 CXXFLAGSEXTRA=-std=c++20
 

@@ -1,23 +1,20 @@
 #include "simdutf.h"
 
-#ifndef SIMDUTF_IS_BIG_ENDIAN
-  #error "SIMDUTF_IS_BIG_ENDIAN should be defined."
-#endif
-
 #include <array>
 #include <fstream>
 #include <memory>
 
 #include <tests/helpers/random_utf16.h>
 #include <tests/helpers/test.h>
+#include <tests/helpers/utf16.h>
 
 constexpr size_t trials = 1000;
 
 TEST_LOOP(
     trials,
-    validate_utf16le_with_errors__returns_success_for_valid_input__single_words) {
+    validate_utf16le_with_errors_returns_success_for_valid_input_single_words) {
   simdutf::tests::helpers::random_utf16 generator{seed, 1, 0};
-  const auto utf16{generator.generate(512, seed)};
+  const auto utf16{generator.generate_le(512, seed)};
 
   simdutf::result res = implementation.validate_utf16le_with_errors(
       reinterpret_cast<const char16_t *>(utf16.data()), utf16.size());
@@ -28,9 +25,9 @@ TEST_LOOP(
 
 TEST_LOOP(
     trials,
-    validate_utf16le_with_errors__returns_success_for_valid_input__surrogate_pairs_short) {
+    validate_utf16le_with_errors_returns_success_for_valid_input_surrogate_pairs_short) {
   simdutf::tests::helpers::random_utf16 generator{seed, 0, 1};
-  const auto utf16{generator.generate(8)};
+  const auto utf16{generator.generate_le(8)};
 
   simdutf::result res = implementation.validate_utf16le_with_errors(
       reinterpret_cast<const char16_t *>(utf16.data()), utf16.size());
@@ -41,9 +38,9 @@ TEST_LOOP(
 
 TEST_LOOP(
     trials,
-    validate_utf16le_with_errors__returns_success_for_valid_input__surrogate_pairs) {
+    validate_utf16le_with_errors_returns_success_for_valid_input_surrogate_pairs) {
   simdutf::tests::helpers::random_utf16 generator{seed, 0, 1};
-  const auto utf16{generator.generate(512)};
+  const auto utf16{generator.generate_le(512)};
 
   simdutf::result res = implementation.validate_utf16le_with_errors(
       reinterpret_cast<const char16_t *>(utf16.data()), utf16.size());
@@ -62,21 +59,21 @@ TEST(provoke_integer_wraparound_in_icelake) {
       0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
       0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20};
   unsigned int cleaned_crash_len = 62;
-  assert(reinterpret_cast<std::uintptr_t>(cleaned_crash) % alignof(char16_t) ==
-         0);
+  ASSERT_EQUAL(
+      reinterpret_cast<std::uintptr_t>(cleaned_crash) % alignof(char16_t), 0);
 
   const auto size = cleaned_crash_len / sizeof(char16_t);
 
   auto r = simdutf::validate_utf16le_with_errors(
       (const char16_t *)cleaned_crash, size);
-  assert(r.error == simdutf::error_code::SUCCESS);
+  ASSERT_EQUAL(r.error, simdutf::error_code::SUCCESS);
 }
 
 // mixed = either 16-bit or 32-bit codewords
-TEST(validate_utf16le_with_errors__returns_success_for_valid_input__mixed) {
+TEST(validate_utf16le_with_errors_returns_success_for_valid_input_mixed) {
   uint32_t seed{1234};
   simdutf::tests::helpers::random_utf16 generator{seed, 1, 1};
-  const auto utf16{generator.generate(512)};
+  const auto utf16{generator.generate_le(512)};
 
   simdutf::result res = implementation.validate_utf16le_with_errors(
       reinterpret_cast<const char16_t *>(utf16.data()), utf16.size());
@@ -85,7 +82,7 @@ TEST(validate_utf16le_with_errors__returns_success_for_valid_input__mixed) {
   ASSERT_EQUAL(res.count, utf16.size());
 }
 
-TEST(validate_utf16le_with_errors__returns_success_for_empty_string) {
+TEST(validate_utf16le_with_errors_returns_success_for_empty_string) {
   const char16_t *buf = (char16_t *)"";
 
   simdutf::result res = implementation.validate_utf16le_with_errors(
@@ -107,25 +104,21 @@ TEST(validate_utf16le_with_errors__returns_success_for_empty_string) {
    2) Determine if W1 is between 0xD800 and 0xDBFF. If not, the sequence
       is in error [...]
 */
-#if SIMDUTF_IS_BIG_ENDIAN
-// todo: port this test for big-endian platforms.
-#else
 TEST_LOOP(
     10,
-    validate_utf16le_with_errors__returns_error_when_input_has_wrong_first_word_value) {
+    validate_utf16le_with_errors_returns_error_when_input_has_wrong_first_word_value) {
   simdutf::tests::helpers::random_utf16 generator{seed, 1, 0};
 
-  auto utf16{generator.generate(128)};
-  const char16_t *buf = reinterpret_cast<const char16_t *>(utf16.data());
+  auto utf16{generator.generate_le(128)};
   const size_t len = utf16.size();
 
   for (char16_t wrong_value = 0xdc00; wrong_value <= 0xdfff; wrong_value++) {
     for (size_t i = 0; i < utf16.size(); i++) {
       const char16_t old = utf16[i];
-      utf16[i] = wrong_value;
+      utf16[i] = to_utf16le(wrong_value);
 
-      simdutf::result res = implementation.validate_utf16le_with_errors(
-          reinterpret_cast<const char16_t *>(buf), len);
+      simdutf::result res =
+          implementation.validate_utf16le_with_errors(utf16.data(), len);
 
       ASSERT_EQUAL(res.error, simdutf::error_code::SURROGATE);
       ASSERT_EQUAL(res.count, i);
@@ -134,7 +127,6 @@ TEST_LOOP(
     }
   }
 }
-#endif
 
 /*
  RFC-2781:
@@ -142,15 +134,11 @@ TEST_LOOP(
  3) [..] if W2 is not between 0xDC00 and 0xDFFF, the sequence is in error.
     Terminate.
 */
-#if SIMDUTF_IS_BIG_ENDIAN
-// todo: port this test for big-endian platforms.
-#else
 TEST(
-    validate_utf16le_with_errors__returns_error_when_input_has_wrong_second_word_value) {
+    validate_utf16le_with_errors_returns_error_when_input_has_wrong_second_word_value) {
   uint32_t seed{1234};
   simdutf::tests::helpers::random_utf16 generator{seed, 1, 0};
-  auto utf16{generator.generate(128)};
-  const char16_t *buf = reinterpret_cast<const char16_t *>(utf16.data());
+  auto utf16{generator.generate_le(128)};
   const size_t len = utf16.size();
 
   const std::array<char16_t, 5> sample_wrong_second_word{0x0000, 0x1000, 0xdbff,
@@ -162,11 +150,11 @@ TEST(
       const char16_t old_W1 = utf16[i + 0];
       const char16_t old_W2 = utf16[i + 1];
 
-      utf16[i + 0] = valid_surrogate_W1;
-      utf16[i + 1] = W2;
+      utf16[i + 0] = to_utf16le(valid_surrogate_W1);
+      utf16[i + 1] = to_utf16le(W2);
 
-      simdutf::result res = implementation.validate_utf16le_with_errors(
-          reinterpret_cast<const char16_t *>(buf), len);
+      simdutf::result res =
+          implementation.validate_utf16le_with_errors(utf16.data(), len);
 
       ASSERT_EQUAL(res.error, simdutf::error_code::SURROGATE);
       ASSERT_EQUAL(res.count, i);
@@ -176,7 +164,6 @@ TEST(
     }
   }
 }
-#endif
 
 /*
  RFC-2781:
@@ -184,37 +171,29 @@ TEST(
  3) If there is no W2 (that is, the sequence ends with W1) [...]
     the sequence is in error. Terminate.
 */
-#if SIMDUTF_IS_BIG_ENDIAN
-// todo: port this test for big-endian platforms.
-#else
-TEST(validate_utf16le_with_errors__returns_error_when_input_is_truncated) {
+TEST(validate_utf16le_with_errors_returns_error_when_input_is_truncated) {
   const char16_t valid_surrogate_W1 = 0xd800;
   uint32_t seed{1234};
   simdutf::tests::helpers::random_utf16 generator{seed, 1, 0};
   for (size_t size = 1; size < 128; size++) {
-    auto utf16{generator.generate(128)};
-    const char16_t *buf = reinterpret_cast<const char16_t *>(utf16.data());
+    auto utf16{generator.generate_le(128)};
     const size_t len = utf16.size();
 
-    utf16[size - 1] = valid_surrogate_W1;
+    utf16[size - 1] = to_utf16le(valid_surrogate_W1);
 
-    simdutf::result res = implementation.validate_utf16le_with_errors(
-        reinterpret_cast<const char16_t *>(buf), len);
+    simdutf::result res =
+        implementation.validate_utf16le_with_errors(utf16.data(), len);
 
     ASSERT_EQUAL(res.error, simdutf::error_code::SURROGATE);
     ASSERT_EQUAL(res.count, size - 1);
   }
 }
-#endif
 
-#if SIMDUTF_IS_BIG_ENDIAN
-// todo: port this test for big-endian platforms.
-#else
-TEST(validate_utf16le_with_errors__extensive_tests) {
-  #ifdef RUN_IN_SPIKE_SIMULATOR
+TEST(validate_utf16le_with_errors_extensive_tests) {
+#ifdef RUN_IN_SPIKE_SIMULATOR
   printf("skipping, cannot be run under Spike");
   return;
-  #endif
+#endif
   const std::string path{"validate_utf16_testcases.txt"};
   std::ifstream file{path};
   if (not file) {
@@ -222,9 +201,9 @@ TEST(validate_utf16le_with_errors__extensive_tests) {
     return;
   }
 
-  constexpr uint16_t V = 0xfaea;
-  constexpr uint16_t L = 0xd852;
-  constexpr uint16_t H = 0xde12;
+  const uint16_t V = to_utf16le(0xfaea);
+  const uint16_t L = to_utf16le(0xd852);
+  const uint16_t H = to_utf16le(0xde12);
 
   constexpr size_t len = 32;
   char16_t buf[len];
@@ -276,12 +255,11 @@ TEST(validate_utf16le_with_errors__extensive_tests) {
     }
 
     // check
-    simdutf::result res = implementation.validate_utf16le_with_errors(
+    const simdutf::result res = implementation.validate_utf16le_with_errors(
         reinterpret_cast<const char16_t *>(buf), len);
 
     ASSERT_EQUAL(res.error, valid);
   }
 }
-#endif
 
 TEST_MAIN

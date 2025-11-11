@@ -1,4 +1,4 @@
-
+#if SIMDUTF_FEATURE_UTF32 && SIMDUTF_FEATURE_LATIN1
 simdutf_warn_unused size_t implementation::convert_utf32_to_latin1(
     const char32_t *src, size_t len, char *dst) const noexcept {
   result res = convert_utf32_to_latin1_with_errors(src, len, dst);
@@ -28,9 +28,13 @@ simdutf_warn_unused size_t implementation::convert_valid_utf32_to_latin1(
     const char32_t *src, size_t len, char *dst) const noexcept {
   return convert_utf32_to_latin1(src, len, dst);
 }
+#endif // SIMDUTF_FEATURE_UTF32 && SIMDUTF_FEATURE_LATIN1
 
-simdutf_warn_unused result implementation::convert_utf32_to_utf8_with_errors(
-    const char32_t *src, size_t len, char *dst) const noexcept {
+#if SIMDUTF_FEATURE_UTF8 && SIMDUTF_FEATURE_UTF32
+template <bool with_validation>
+simdutf_warn_unused result convert_utf32_to_utf8_aux(const char32_t *src,
+                                                     size_t len,
+                                                     char *dst) noexcept {
   size_t n = len;
   const char32_t *srcBeg = src;
   const char *dstBeg = dst;
@@ -86,23 +90,21 @@ simdutf_warn_unused result implementation::convert_utf32_to_utf8_with_errors(
       n -= vl, src += vl, dst += vlOut;
       continue;
     }
-    long idx1 =
-        __riscv_vfirst_m_b8(__riscv_vmsgtu_vx_u32m4_b8(v, 0x10FFFF, vl), vl);
-    vbool8_t sur = __riscv_vmseq_vx_u32m4_b8(
-        __riscv_vand_vx_u32m4(v, 0xFFFFF800, vl), 0xD800, vl);
-    long idx2 = __riscv_vfirst_m_b8(sur, vl);
-    if (idx1 >= 0 && idx2 >= 0) {
-      if (idx1 <= idx2) {
-        return result(error_code::TOO_LARGE, src - srcBeg + idx1);
-      } else {
-        return result(error_code::SURROGATE, src - srcBeg + idx2);
+
+    if (with_validation) {
+      const long idx1 =
+          __riscv_vfirst_m_b8(__riscv_vmsgtu_vx_u32m4_b8(v, 0x10FFFF, vl), vl);
+      vbool8_t sur = __riscv_vmseq_vx_u32m4_b8(
+          __riscv_vand_vx_u32m4(v, 0xFFFFF800, vl), 0xD800, vl);
+      const long idx2 = __riscv_vfirst_m_b8(sur, vl);
+      if (idx1 >= 0 || idx2 >= 0) {
+        if (static_cast<unsigned long>(idx1) <=
+            static_cast<unsigned long>(idx2)) {
+          return result(error_code::TOO_LARGE, src - srcBeg + idx1);
+        } else {
+          return result(error_code::SURROGATE, src - srcBeg + idx2);
+        }
       }
-    }
-    if (idx1 >= 0) {
-      return result(error_code::TOO_LARGE, src - srcBeg + idx1);
-    }
-    if (idx2 >= 0) {
-      return result(error_code::SURROGATE, src - srcBeg + idx2);
     }
 
     vbool8_t m4 = __riscv_vmsgtu_vx_u32m4_b8(v, 0x10000 - 1, vl);
@@ -170,6 +172,12 @@ simdutf_warn_unused result implementation::convert_utf32_to_utf8_with_errors(
   return result(error_code::SUCCESS, dst - dstBeg);
 }
 
+simdutf_warn_unused result implementation::convert_utf32_to_utf8_with_errors(
+    const char32_t *src, size_t len, char *dst) const noexcept {
+  constexpr bool with_validation = true;
+  return convert_utf32_to_utf8_aux<with_validation>(src, len, dst);
+}
+
 simdutf_warn_unused size_t implementation::convert_utf32_to_utf8(
     const char32_t *src, size_t len, char *dst) const noexcept {
   result res = convert_utf32_to_utf8_with_errors(src, len, dst);
@@ -178,9 +186,13 @@ simdutf_warn_unused size_t implementation::convert_utf32_to_utf8(
 
 simdutf_warn_unused size_t implementation::convert_valid_utf32_to_utf8(
     const char32_t *src, size_t len, char *dst) const noexcept {
-  return convert_utf32_to_utf8(src, len, dst);
+  constexpr bool with_validation = false;
+  const auto res = convert_utf32_to_utf8_aux<with_validation>(src, len, dst);
+  return res.count;
 }
+#endif // SIMDUTF_FEATURE_UTF8 && SIMDUTF_FEATURE_UTF32
 
+#if SIMDUTF_FEATURE_UTF16 && SIMDUTF_FEATURE_UTF32
 template <simdutf_ByteFlip bflip>
 simdutf_really_inline static result
 rvv_convert_utf32_to_utf16_with_errors(const char32_t *src, size_t len,
@@ -194,28 +206,33 @@ rvv_convert_utf32_to_utf16_with_errors(const char32_t *src, size_t len,
     vl = __riscv_vsetvl_e32m4(len);
     vuint32m4_t v = __riscv_vle32_v_u32m4((uint32_t *)src, vl);
     vuint32m4_t off = __riscv_vadd_vx_u32m4(v, 0xFFFF2000, vl);
-    long idx1 =
-        __riscv_vfirst_m_b8(__riscv_vmsgtu_vx_u32m4_b8(v, 0x10FFFF, vl), vl);
-    long idx2 = __riscv_vfirst_m_b8(
+    const long err_surrogate_idx = __riscv_vfirst_m_b8(
         __riscv_vmsgtu_vx_u32m4_b8(off, 0xFFFFF7FF, vl), vl);
-    if (idx1 >= 0 && idx2 >= 0) {
-      if (idx1 <= idx2)
-        return result(error_code::TOO_LARGE, src - srcBeg + idx1);
-      return result(error_code::SURROGATE, src - srcBeg + idx2);
-    }
-    if (idx1 >= 0)
-      return result(error_code::TOO_LARGE, src - srcBeg + idx1);
-    if (idx2 >= 0)
-      return result(error_code::SURROGATE, src - srcBeg + idx2);
-    long idx =
+    const long idx =
         __riscv_vfirst_m_b8(__riscv_vmsgtu_vx_u32m4_b8(v, 0xFFFF, vl), vl);
     if (idx < 0) {
+      if (err_surrogate_idx >= 0) {
+        return result(error_code::SURROGATE, src - srcBeg + err_surrogate_idx);
+      }
+
       vlOut = vl;
       vuint16m2_t n =
           simdutf_byteflip<bflip>(__riscv_vncvt_x_x_w_u16m2(v, vlOut), vlOut);
       __riscv_vse16_v_u16m2((uint16_t *)dst, n, vlOut);
       continue;
     }
+
+    const long err_too_big_idx =
+        __riscv_vfirst_m_b8(__riscv_vmsgtu_vx_u32m4_b8(v, 0x10FFFF, vl), vl);
+    if (err_too_big_idx >= 0 || err_surrogate_idx >= 0) {
+      if (static_cast<unsigned long>(err_too_big_idx) <=
+          static_cast<unsigned long>(err_surrogate_idx)) {
+        return result(error_code::TOO_LARGE, src - srcBeg + err_too_big_idx);
+      } else {
+        return result(error_code::SURROGATE, src - srcBeg + err_surrogate_idx);
+      }
+    }
+
     vlOut = rvv_utf32_store_utf16_m4<bflip>((uint16_t *)dst, v, vl, m4even);
   }
   return result(error_code::SUCCESS, dst - dstBeg);
@@ -287,3 +304,4 @@ simdutf_warn_unused size_t implementation::convert_valid_utf32_to_utf16be(
   else
     return rvv_convert_valid_utf32_to_utf16<simdutf_ByteFlip::V>(src, len, dst);
 }
+#endif // SIMDUTF_FEATURE_UTF16 && SIMDUTF_FEATURE_UTF32

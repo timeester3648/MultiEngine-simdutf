@@ -1,8 +1,9 @@
+include(CTest)
+
 set(SIMDUTF_TEST_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../)
 if(MSVC)
   add_compile_options("/Zi" "/EHsc" "/GR")
 endif()
-
 add_subdirectory(helpers)
 add_subdirectory(reference)
 
@@ -22,7 +23,7 @@ add_cpp_test(random_fuzzer)
 target_link_libraries(random_fuzzer
   PUBLIC simdutf::tests::helpers
          simdutf::tests::reference)
-if(MSVC AND BUILD_SHARED_LIBS)
+if(WIN32 AND BUILD_SHARED_LIBS)
   # Copy the simdutf dll into the tests directory
   add_custom_command(TARGET random_fuzzer POST_BUILD        # Adds a post-build event
     COMMAND ${CMAKE_COMMAND} -E copy_if_different  # which executes "cmake -E copy_if_different..."
@@ -110,12 +111,16 @@ if(Python3_FOUND)
   set(SCRIPT ${SIMDUTF_SOURCE_DIR}/scripts/sse_validate_utf16le_testcases.py)
   add_custom_command(TARGET validate_utf16le_basic_tests
                    COMMAND ${Python3_EXECUTABLE} ${SCRIPT}
-                   DEPENDS ${SCRIPT}
+                   POST_BUILD
                    VERBATIM
   )
   unset(SCRIPT)
 endif(Python3_FOUND)
+add_cpp_test(find_tests)
 
+target_link_libraries(find_tests
+  PUBLIC simdutf::tests::helpers
+         simdutf::tests::reference)
 
 add_cpp_test(convert_latin1_to_utf8_tests)
 target_link_libraries(convert_latin1_to_utf8_tests 
@@ -226,7 +231,12 @@ add_cpp_test(convert_valid_utf16be_to_latin1_tests)
 target_link_libraries(convert_valid_utf16be_to_latin1_tests 
   PUBLIC simdutf::tests::helpers
           simdutf::tests::reference)
-                
+
+add_cpp_test(convert_utf16_to_utf8_safe_tests)
+target_link_libraries(convert_utf16_to_utf8_safe_tests
+  PUBLIC simdutf::tests::helpers
+         simdutf::tests::reference)
+
 add_cpp_test(convert_utf16le_to_utf8_tests)
 target_link_libraries(convert_utf16le_to_utf8_tests
   PUBLIC simdutf::tests::helpers
@@ -376,3 +386,34 @@ add_cpp_test(base64_tests)
 target_link_libraries(base64_tests
   PUBLIC simdutf::tests::helpers
          simdutf::tests::reference)
+
+add_cpp_test(span_tests)
+target_link_libraries(span_tests
+  PUBLIC simdutf::tests::helpers
+         simdutf::tests::reference)
+if(SIMDUTF_ATOMIC_BASE64_TESTS)
+  add_cpp_test(atomic_base64_tests)
+  target_link_libraries(atomic_base64_tests
+    PUBLIC simdutf::tests::helpers
+          simdutf::tests::reference)
+endif(SIMDUTF_ATOMIC_BASE64_TESTS)
+add_cpp_test(internal_tests)
+target_link_libraries(internal_tests
+  PUBLIC simdutf::tests::helpers)
+
+add_cpp_test(utf8_length_from_utf16_tests)
+target_link_libraries(utf8_length_from_utf16_tests
+    PUBLIC simdutf::tests::helpers)
+
+add_cpp_test(to_well_formed_utf16_tests)
+target_link_libraries(to_well_formed_utf16_tests
+  PUBLIC simdutf::tests::helpers
+         simdutf::tests::reference)
+
+find_program(GIT_EXECUTABLE git)
+if(Python3_FOUND AND GIT_EXECUTABLE)
+  add_test(NAME check_feature_macros
+    COMMAND ${Python3_EXECUTABLE} ${SIMDUTF_SOURCE_DIR}/scripts/check_feature_macros.py
+    WORKING_DIRECTORY ${SIMDUTF_SOURCE_DIR}
+  )
+endif()

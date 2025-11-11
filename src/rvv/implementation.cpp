@@ -1,21 +1,3 @@
-#include "scalar/latin1.h"
-#include "scalar/utf16.h"
-#include "scalar/utf8.h"
-#include "scalar/utf8_to_latin1/utf8_to_latin1.h"
-#include "scalar/utf8_to_latin1/valid_utf8_to_latin1.h"
-
-#include "scalar/utf16_to_utf8/utf16_to_utf8.h"
-#include "scalar/utf16_to_utf8/valid_utf16_to_utf8.h"
-
-#include "scalar/utf16_to_utf32/utf16_to_utf32.h"
-#include "scalar/utf16_to_utf32/valid_utf16_to_utf32.h"
-
-#include "scalar/utf32_to_utf8/utf32_to_utf8.h"
-#include "scalar/utf32_to_utf8/valid_utf32_to_utf8.h"
-
-#include "scalar/utf32_to_utf16/utf32_to_utf16.h"
-#include "scalar/utf32_to_utf16/valid_utf32_to_utf16.h"
-
 #include "simdutf/rvv/begin.h"
 namespace simdutf {
 namespace SIMDUTF_IMPLEMENTATION {
@@ -40,9 +22,19 @@ namespace SIMDUTF_IMPLEMENTATION {
 
 #include "rvv/rvv_latin1_to.inl.cpp"
 #include "rvv/rvv_utf16_to.inl.cpp"
+
 #include "rvv/rvv_utf32_to.inl.cpp"
 #include "rvv/rvv_utf8_to.inl.cpp"
 
+#if SIMDUTF_FEATURE_BASE64
+  #include "rvv/rvv_find.cpp"
+#endif // SIMDUTF_FEATURE_BASE64
+
+#if SIMDUTF_FEATURE_UTF16
+  #include "rvv/rvv_utf16fix.cpp"
+#endif // SIMDUTF_FEATURE_UTF16
+
+#if SIMDUTF_FEATURE_DETECT_ENCODING
 simdutf_warn_unused int
 implementation::detect_encodings(const char *input,
                                  size_t length) const noexcept {
@@ -55,7 +47,7 @@ implementation::detect_encodings(const char *input,
   if (validate_utf8(input, length))
     out |= encoding_type::UTF8;
   if (length % 2 == 0) {
-    if (validate_utf16(reinterpret_cast<const char16_t *>(input), length / 2))
+    if (validate_utf16le(reinterpret_cast<const char16_t *>(input), length / 2))
       out |= encoding_type::UTF16_LE;
   }
   if (length % 4 == 0) {
@@ -65,122 +57,35 @@ implementation::detect_encodings(const char *input,
 
   return out;
 }
+#endif // SIMDUTF_FEATURE_DETECT_ENCODING
 
-template <simdutf_ByteFlip bflip>
-simdutf_really_inline static void
-rvv_change_endianness_utf16(const char16_t *src, size_t len, char16_t *dst) {
-  for (size_t vl; len > 0; len -= vl, src += vl, dst += vl) {
-    vl = __riscv_vsetvl_e16m8(len);
-    vuint16m8_t v = __riscv_vle16_v_u16m8((uint16_t *)src, vl);
-    __riscv_vse16_v_u16m8((uint16_t *)dst, simdutf_byteflip<bflip>(v, vl), vl);
-  }
-}
-
-void implementation::change_endianness_utf16(const char16_t *src, size_t len,
-                                             char16_t *dst) const noexcept {
-  if (supports_zvbb())
-    return rvv_change_endianness_utf16<simdutf_ByteFlip::ZVBB>(src, len, dst);
-  else
-    return rvv_change_endianness_utf16<simdutf_ByteFlip::V>(src, len, dst);
-}
-
-simdutf_warn_unused size_t implementation::maximal_binary_length_from_base64(
-    const char *input, size_t length) const noexcept {
-  return scalar::base64::maximal_binary_length_from_base64(input, length);
-}
-
+#if SIMDUTF_FEATURE_BASE64
 simdutf_warn_unused result implementation::base64_to_binary(
     const char *input, size_t length, char *output, base64_options options,
     last_chunk_handling_options last_chunk_options) const noexcept {
-  while (length > 0 &&
-         scalar::base64::is_ascii_white_space(input[length - 1])) {
-    length--;
-  }
-  size_t equallocation =
-      length; // location of the first padding character if any
-  size_t equalsigns = 0;
-  if (length > 0 && input[length - 1] == '=') {
-    equallocation = length - 1;
-    length -= 1;
-    equalsigns++;
-    while (length > 0 &&
-           scalar::base64::is_ascii_white_space(input[length - 1])) {
-      length--;
-    }
-    if (length > 0 && input[length - 1] == '=') {
-      equallocation = length - 1;
-      equalsigns++;
-      length -= 1;
-    }
-  }
-  if (length == 0) {
-    if (equalsigns > 0) {
-      return {INVALID_BASE64_CHARACTER, equallocation};
-    }
-    return {SUCCESS, 0};
-  }
-  result r = scalar::base64::base64_tail_decode(
-      output, input, length, equalsigns, options, last_chunk_options);
-  if (last_chunk_options != stop_before_partial &&
-      r.error == error_code::SUCCESS && equalsigns > 0) {
-    // additional checks
-    if ((r.count % 3 == 0) || ((r.count % 3) + 1 + equalsigns != 4)) {
-      return {INVALID_BASE64_CHARACTER, equallocation};
-    }
-  }
-  return r;
-}
-
-simdutf_warn_unused size_t implementation::maximal_binary_length_from_base64(
-    const char16_t *input, size_t length) const noexcept {
-  return scalar::base64::maximal_binary_length_from_base64(input, length);
+  return simdutf::scalar::base64::base64_to_binary_details_impl(
+      input, length, output, options, last_chunk_options);
 }
 
 simdutf_warn_unused result implementation::base64_to_binary(
     const char16_t *input, size_t length, char *output, base64_options options,
     last_chunk_handling_options last_chunk_options) const noexcept {
-  while (length > 0 &&
-         scalar::base64::is_ascii_white_space(input[length - 1])) {
-    length--;
-  }
-  size_t equallocation =
-      length; // location of the first padding character if any
-  auto equalsigns = 0;
-  if (length > 0 && input[length - 1] == '=') {
-    equallocation = length - 1;
-    length -= 1;
-    equalsigns++;
-    while (length > 0 &&
-           scalar::base64::is_ascii_white_space(input[length - 1])) {
-      length--;
-    }
-    if (length > 0 && input[length - 1] == '=') {
-      equallocation = length - 1;
-      equalsigns++;
-      length -= 1;
-    }
-  }
-  if (length == 0) {
-    if (equalsigns > 0) {
-      return {INVALID_BASE64_CHARACTER, equallocation};
-    }
-    return {SUCCESS, 0};
-  }
-  result r = scalar::base64::base64_tail_decode(
-      output, input, length, equalsigns, options, last_chunk_options);
-  if (last_chunk_options != stop_before_partial &&
-      r.error == error_code::SUCCESS && equalsigns > 0) {
-    // additional checks
-    if ((r.count % 3 == 0) || ((r.count % 3) + 1 + equalsigns != 4)) {
-      return {INVALID_BASE64_CHARACTER, equallocation};
-    }
-  }
-  return r;
+  return simdutf::scalar::base64::base64_to_binary_details_impl(
+      input, length, output, options, last_chunk_options);
 }
 
-simdutf_warn_unused size_t implementation::base64_length_from_binary(
-    size_t length, base64_options options) const noexcept {
-  return scalar::base64::base64_length_from_binary(length, options);
+simdutf_warn_unused full_result implementation::base64_to_binary_details(
+    const char *input, size_t length, char *output, base64_options options,
+    last_chunk_handling_options last_chunk_options) const noexcept {
+  return simdutf::scalar::base64::base64_to_binary_details_impl(
+      input, length, output, options, last_chunk_options);
+}
+
+simdutf_warn_unused full_result implementation::base64_to_binary_details(
+    const char16_t *input, size_t length, char *output, base64_options options,
+    last_chunk_handling_options last_chunk_options) const noexcept {
+  return simdutf::scalar::base64::base64_to_binary_details_impl(
+      input, length, output, options, last_chunk_options);
 }
 
 size_t implementation::binary_to_base64(const char *input, size_t length,
@@ -188,6 +93,15 @@ size_t implementation::binary_to_base64(const char *input, size_t length,
                                         base64_options options) const noexcept {
   return scalar::base64::tail_encode_base64(output, input, length, options);
 }
+
+size_t implementation::binary_to_base64_with_lines(
+    const char *input, size_t length, char *output, size_t line_length,
+    base64_options options) const noexcept {
+  return scalar::base64::tail_encode_base64_impl<true>(output, input, length,
+                                                       options, line_length);
+}
+#endif // SIMDUTF_FEATURE_BASE64
+
 } // namespace SIMDUTF_IMPLEMENTATION
 } // namespace simdutf
 

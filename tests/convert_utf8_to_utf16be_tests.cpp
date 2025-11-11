@@ -9,12 +9,43 @@
 #include <tests/helpers/test.h>
 
 namespace {
-std::array<size_t, 7> input_size{7, 16, 12, 64, 67, 128, 256};
+constexpr std::array<size_t, 7> input_size{7, 16, 12, 64, 67, 128, 256};
+constexpr simdutf::endianness BE = simdutf::endianness::BIG;
 
 using simdutf::tests::helpers::transcode_utf8_to_utf16_test_base;
 
 constexpr size_t trials = 10000;
 } // namespace
+
+TEST(issue_631) {
+  // this test case caused an out of bounds write on arm64
+  alignas(1) const unsigned char data[] = {
+      0x20, 0xbf, 0xbf, 0xb0, 0x20, 0xb2, 0xb2, 0xb2, 0x20, 0xbf, 0x86,
+      0x9b, 0x20, 0x20, 0x20, 0x20, 0xff, 0x20, 0x20, 0x20, 0x20, 0x20,
+      0xb0, 0xb0, 0xb0, 0x20, 0xb2, 0xb2, 0xb2, 0x20, 0xbf, 0x86, 0x9b,
+      0x20, 0xb0, 0xb0, 0xb0, 0x20, 0xb2, 0xb2, 0xb2, 0x20, 0xbf, 0x86,
+      0x9b, 0x20, 0x20, 0x20, 0x20, 0x20, 0xb2, 0xb2, 0xb2, 0x20, 0xbf,
+      0x86, 0x9b, 0x20, 0xb2, 0xb2, 0xb2, 0x20, 0x20, 0x86, 0x9b, 0x20,
+      0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20};
+  constexpr std::size_t data_len_bytes = sizeof(data);
+  constexpr std::size_t data_len = data_len_bytes / sizeof(char);
+  const auto validation1 =
+      implementation.validate_utf8_with_errors((const char *)data, data_len);
+  ASSERT_EQUAL(validation1.count, 1);
+  ASSERT_EQUAL(validation1.error, simdutf::error_code::TOO_LONG);
+
+  const bool validation2 =
+      implementation.validate_utf8((const char *)data, data_len);
+  ASSERT_EQUAL(validation1.error == simdutf::error_code::SUCCESS, validation2);
+
+  const auto outlen =
+      implementation.utf16_length_from_utf8((const char *)data, data_len);
+  ASSERT_EQUAL(outlen, 36);
+  std::vector<char16_t> output(outlen);
+  const auto r = implementation.convert_utf8_to_utf16be(
+      (const char *)data, data_len, output.data());
+  ASSERT_EQUAL(r, 0);
+}
 
 TEST(issue_ossfuzz_71218) {
   alignas(1) const unsigned char data[] = {
@@ -207,13 +238,8 @@ TEST_LOOP(trials, convert_pure_ASCII) {
   auto generator = [&counter]() -> uint32_t { return counter++ & 0x7f; };
 
   auto procedure = [&implementation](const char *utf8, size_t size,
-                                     char16_t *utf16le) -> size_t {
-    std::vector<char16_t> utf16be(
-        2 * size); // Assume each UTF-8 byte is converted into two UTF-16 bytes
-    size_t len =
-        implementation.convert_utf8_to_utf16be(utf8, size, utf16be.data());
-    implementation.change_endianness_utf16(utf16be.data(), len, utf16le);
-    return len;
+                                     char16_t *utf16be) -> size_t {
+    return implementation.convert_utf8_to_utf16be(utf8, size, utf16be);
   };
   auto size_procedure = [&implementation](const char *utf8,
                                           size_t size) -> size_t {
@@ -221,7 +247,7 @@ TEST_LOOP(trials, convert_pure_ASCII) {
   };
 
   for (size_t size : input_size) {
-    transcode_utf8_to_utf16_test_base test(generator, size);
+    transcode_utf8_to_utf16_test_base test(BE, generator, size);
     ASSERT_TRUE(test(procedure));
     ASSERT_TRUE(test.check_size(size_procedure));
   }
@@ -232,20 +258,15 @@ TEST_LOOP(trials, convert_1_or_2_UTF8_bytes) {
       0x0000, 0x07ff, seed); // range for 1 or 2 UTF-8 bytes
 
   auto procedure = [&implementation](const char *utf8, size_t size,
-                                     char16_t *utf16le) -> size_t {
-    std::vector<char16_t> utf16be(
-        2 * size); // Assume each UTF-8 byte is converted into two UTF-16 bytes
-    size_t len =
-        implementation.convert_utf8_to_utf16be(utf8, size, utf16be.data());
-    implementation.change_endianness_utf16(utf16be.data(), len, utf16le);
-    return len;
+                                     char16_t *utf16be) -> size_t {
+    return implementation.convert_utf8_to_utf16be(utf8, size, utf16be);
   };
   auto size_procedure = [&implementation](const char *utf8,
                                           size_t size) -> size_t {
     return implementation.utf16_length_from_utf8(utf8, size);
   };
   for (size_t size : input_size) {
-    transcode_utf8_to_utf16_test_base test(random, size);
+    transcode_utf8_to_utf16_test_base test(BE, random, size);
     ASSERT_TRUE(test(procedure));
     ASSERT_TRUE(test.check_size(size_procedure));
   }
@@ -257,20 +278,15 @@ TEST_LOOP(trials, convert_1_or_2_or_3_UTF8_bytes) {
       {{0x0000, 0xd7ff}, {0xe000, 0xffff}}, seed);
 
   auto procedure = [&implementation](const char *utf8, size_t size,
-                                     char16_t *utf16le) -> size_t {
-    std::vector<char16_t> utf16be(
-        2 * size); // Assume each UTF-8 byte is converted into two UTF-16 bytes
-    size_t len =
-        implementation.convert_utf8_to_utf16be(utf8, size, utf16be.data());
-    implementation.change_endianness_utf16(utf16be.data(), len, utf16le);
-    return len;
+                                     char16_t *utf16be) -> size_t {
+    return implementation.convert_utf8_to_utf16be(utf8, size, utf16be);
   };
   auto size_procedure = [&implementation](const char *utf8,
                                           size_t size) -> size_t {
     return implementation.utf16_length_from_utf8(utf8, size);
   };
   for (size_t size : input_size) {
-    transcode_utf8_to_utf16_test_base test(random, size);
+    transcode_utf8_to_utf16_test_base test(BE, random, size);
     ASSERT_TRUE(test(procedure));
     ASSERT_TRUE(test.check_size(size_procedure));
   }
@@ -282,11 +298,8 @@ TEST_LOOP(trials, convert_3_or_4_UTF8_bytes) {
       seed); // range for 3 or 4 UTF-8 bytes
 
   auto procedure = [&implementation](const char *utf8, size_t size,
-                                     char16_t *utf16le) -> size_t {
-    std::vector<char16_t> utf16be(size);
-    size_t len =
-        implementation.convert_utf8_to_utf16be(utf8, size, utf16be.data());
-    implementation.change_endianness_utf16(utf16be.data(), len, utf16le);
+                                     char16_t *utf16be) -> size_t {
+    size_t len = implementation.convert_utf8_to_utf16be(utf8, size, utf16be);
     return len;
   };
   auto size_procedure = [&implementation](const char *utf8,
@@ -294,7 +307,46 @@ TEST_LOOP(trials, convert_3_or_4_UTF8_bytes) {
     return implementation.utf16_length_from_utf8(utf8, size);
   };
   for (size_t size : input_size) {
-    transcode_utf8_to_utf16_test_base test(random, size);
+    transcode_utf8_to_utf16_test_base test(BE, random, size);
+    ASSERT_TRUE(test(procedure));
+    ASSERT_TRUE(test.check_size(size_procedure));
+  }
+}
+
+TEST_LOOP(trials, convert_2_UTF8_bytes) {
+  simdutf::tests::helpers::RandomInt random(0x0080, 0x07ff,
+                                            seed); // range for 2 UTF-8 bytes
+
+  auto procedure = [&implementation](const char *utf8, size_t size,
+                                     char16_t *utf16be) -> size_t {
+    auto result = implementation.convert_utf8_to_utf16be(utf8, size, utf16be);
+    return result;
+  };
+  auto size_procedure = [&implementation](const char *utf8,
+                                          size_t size) -> size_t {
+    return implementation.utf16_length_from_utf8(utf8, size);
+  };
+  for (size_t size : input_size) {
+    transcode_utf8_to_utf16_test_base test(BE, random, size);
+    ASSERT_TRUE(test(procedure));
+    ASSERT_TRUE(test.check_size(size_procedure));
+  }
+}
+
+TEST_LOOP(trials, convert_3_UTF8_bytes) {
+  simdutf::tests::helpers::RandomInt random(0x0800, 0xd800 - 1,
+                                            seed); // range for 3 UTF-8 bytes
+
+  auto procedure = [&implementation](const char *utf8, size_t size,
+                                     char16_t *utf16be) -> size_t {
+    return implementation.convert_utf8_to_utf16be(utf8, size, utf16be);
+  };
+  auto size_procedure = [&implementation](const char *utf8,
+                                          size_t size) -> size_t {
+    return implementation.utf16_length_from_utf8(utf8, size);
+  };
+  for (size_t size : input_size) {
+    transcode_utf8_to_utf16_test_base test(BE, random, size);
     ASSERT_TRUE(test(procedure));
     ASSERT_TRUE(test.check_size(size_procedure));
   }

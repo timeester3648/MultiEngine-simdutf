@@ -1,30 +1,28 @@
 #ifndef SIMDUTF_COMMON_DEFS_H
 #define SIMDUTF_COMMON_DEFS_H
 
-#include <cassert>
 #include "simdutf/portability.h"
 #include "simdutf/avx512.h"
 
-#if defined(__GNUC__)
-  // Marks a block with a name so that MCA analysis can see it.
-  #define SIMDUTF_BEGIN_DEBUG_BLOCK(name)                                      \
-    __asm volatile("# LLVM-MCA-BEGIN " #name);
-  #define SIMDUTF_END_DEBUG_BLOCK(name) __asm volatile("# LLVM-MCA-END " #name);
-  #define SIMDUTF_DEBUG_BLOCK(name, block)                                     \
-    BEGIN_DEBUG_BLOCK(name);                                                   \
-    block;                                                                     \
-    END_DEBUG_BLOCK(name);
+// Sometimes logging is useful, but we want it disabled by default
+// and free of any logging code in release builds.
+#ifdef SIMDUTF_LOGGING
+  #include <iostream>
+  #define simdutf_log(msg)                                                     \
+    std::cout << "[" << __FUNCTION__ << "]: " << msg << std::endl              \
+              << "\t" << __FILE__ << ":" << __LINE__ << std::endl;
+  #define simdutf_log_assert(cond, msg)                                        \
+    do {                                                                       \
+      if (!(cond)) {                                                           \
+        std::cerr << "[" << __FUNCTION__ << "]: " << msg << std::endl          \
+                  << "\t" << __FILE__ << ":" << __LINE__ << std::endl;         \
+        std::abort();                                                          \
+      }                                                                        \
+    } while (0)
 #else
-  #define SIMDUTF_BEGIN_DEBUG_BLOCK(name)
-  #define SIMDUTF_END_DEBUG_BLOCK(name)
-  #define SIMDUTF_DEBUG_BLOCK(name, block)
+  #define simdutf_log(msg)
+  #define simdutf_log_assert(cond, msg)
 #endif
-
-// Align to N-byte boundary
-#define SIMDUTF_ROUNDUP_N(a, n) (((a) + ((n) - 1)) & ~((n) - 1))
-#define SIMDUTF_ROUNDDOWN_N(a, n) ((a) & ~((n) - 1))
-
-#define SIMDUTF_ISALIGNED_N(ptr, n) (((uintptr_t)(ptr) & ((n) - 1)) == 0)
 
 #if defined(SIMDUTF_REGULAR_VISUAL_STUDIO)
   #define SIMDUTF_DEPRECATED __declspec(deprecated)
@@ -65,7 +63,7 @@
   #define SIMDUTF_DISABLE_DEPRECATED_WARNING SIMDUTF_DISABLE_VS_WARNING(4996)
   #define SIMDUTF_DISABLE_STRICT_OVERFLOW_WARNING
   #define SIMDUTF_POP_DISABLE_WARNINGS __pragma(warning(pop))
-
+  #define SIMDUTF_DISABLE_UNUSED_WARNING
 #else // SIMDUTF_REGULAR_VISUAL_STUDIO
   #if defined(__OPTIMIZE__) || defined(NDEBUG)
     #define simdutf_really_inline inline __attribute__((always_inline))
@@ -86,7 +84,6 @@
   #ifndef simdutf_unlikely
     #define simdutf_unlikely(x) __builtin_expect(!!(x), 0)
   #endif
-
   // clang-format off
   #define SIMDUTF_PUSH_DISABLE_WARNINGS _Pragma("GCC diagnostic push")
   // gcc doesn't seem to disable all warnings with all and extra, add warnings
@@ -118,34 +115,57 @@
   #define SIMDUTF_DISABLE_STRICT_OVERFLOW_WARNING                              \
     SIMDUTF_DISABLE_GCC_WARNING(-Wstrict-overflow)
   #define SIMDUTF_POP_DISABLE_WARNINGS _Pragma("GCC diagnostic pop")
+  #define SIMDUTF_DISABLE_UNUSED_WARNING                                       \
+    SIMDUTF_PUSH_DISABLE_WARNINGS                                              \
+    SIMDUTF_DISABLE_GCC_WARNING(-Wunused-function)                             \
+    SIMDUTF_DISABLE_GCC_WARNING(-Wunused-const-variable)
   // clang-format on
 
 #endif // MSC_VER
 
 #ifndef SIMDUTF_DLLIMPORTEXPORT
-  #if defined(SIMDUTF_VISUAL_STUDIO)
-    /**
-     * It does not matter here whether you are using
-     * the regular visual studio or clang under visual
-     * studio.
-     */
-    #if SIMDUTF_USING_LIBRARY
+  #if defined(SIMDUTF_VISUAL_STUDIO) // Visual Studio
+                                     /**
+                                      * Windows users need to do some extra work when building
+                                      * or using a dynamic library (DLL). When building, we need
+                                      * to set SIMDUTF_DLLIMPORTEXPORT to __declspec(dllexport).
+                                      * When *using* the DLL, the user needs to set
+                                      * SIMDUTF_DLLIMPORTEXPORT __declspec(dllimport).
+                                      *
+                                      * Static libraries not need require such work.
+                                      *
+                                      * It does not matter here whether you are using
+                                      * the regular visual studio or clang under visual
+                                      * studio, you still need to handle these issues.
+                                      *
+                                      * Non-Windows systems do not have this complexity.
+                                      */
+    #if SIMDUTF_BUILDING_WINDOWS_DYNAMIC_LIBRARY
+
+      // We set SIMDUTF_BUILDING_WINDOWS_DYNAMIC_LIBRARY when we build a DLL
+      // under Windows. It should never happen that both
+      // SIMDUTF_BUILDING_WINDOWS_DYNAMIC_LIBRARY and
+      // SIMDUTF_USING_WINDOWS_DYNAMIC_LIBRARY are set.
+      #define SIMDUTF_DLLIMPORTEXPORT __declspec(dllexport)
+    #elif SIMDUTF_USING_WINDOWS_DYNAMIC_LIBRARY
+      // Windows user who call a dynamic library should set
+      // SIMDUTF_USING_WINDOWS_DYNAMIC_LIBRARY to 1.
+
       #define SIMDUTF_DLLIMPORTEXPORT __declspec(dllimport)
     #else
-      #define SIMDUTF_DLLIMPORTEXPORT __declspec(dllexport)
+      // We assume by default static linkage
+      #define SIMDUTF_DLLIMPORTEXPORT
     #endif
-  #else
+  #else // defined(SIMDUTF_VISUAL_STUDIO)
+    // Non-Windows systems do not have this complexity.
     #define SIMDUTF_DLLIMPORTEXPORT
-  #endif
+  #endif // defined(SIMDUTF_VISUAL_STUDIO)
 #endif
 
-/// If EXPR is an error, returns it.
-#define SIMDUTF_TRY(EXPR)                                                      \
-  {                                                                            \
-    auto _err = (EXPR);                                                        \
-    if (_err) {                                                                \
-      return _err;                                                             \
-    }                                                                          \
-  }
+#if SIMDUTF_MAYBE_UNUSED_AVAILABLE
+  #define simdutf_maybe_unused [[maybe_unused]]
+#else
+  #define simdutf_maybe_unused
+#endif
 
 #endif // SIMDUTF_COMMON_DEFS_H

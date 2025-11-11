@@ -70,6 +70,13 @@ struct simdutf_riscv_hwprobe {
   #define SIMDUTF_RISCV_HWPROBE_EXT_ZVBB (1 << 17)
 #endif // SIMDUTF_IS_RISCV64 && defined(__linux__)
 
+#if defined(__loongarch__) && defined(__linux__)
+  #include <sys/auxv.h>
+// bits/hwcap.h
+// #define HWCAP_LOONGARCH_LSX             (1 << 4)
+// #define HWCAP_LOONGARCH_LASX            (1 << 5)
+#endif
+
 namespace simdutf {
 namespace internal {
 
@@ -94,6 +101,8 @@ enum instruction_set {
   AVX512VPOPCNTDQ = 0x2000,
   RVV = 0x4000,
   ZVBB = 0x8000,
+  LSX = 0x40000,
+  LASX = 0x80000,
 };
 
 #if defined(__PPC64__)
@@ -283,6 +292,22 @@ static inline uint32_t detect_supported_architectures() {
   if (ecx & cpuid_bit::ecx::avx512vpopcnt) {
     host_isa |= instruction_set::AVX512VPOPCNTDQ;
   }
+  return host_isa;
+}
+#elif defined(__loongarch__)
+
+static inline uint32_t detect_supported_architectures() {
+  uint32_t host_isa = instruction_set::DEFAULT;
+  #if defined(__linux__)
+  uint64_t hwcap = 0;
+  hwcap = getauxval(AT_HWCAP);
+  if (hwcap & HWCAP_LOONGARCH_LSX) {
+    host_isa |= instruction_set::LSX;
+  }
+  if (hwcap & HWCAP_LOONGARCH_LASX) {
+    host_isa |= instruction_set::LASX;
+  }
+  #endif
   return host_isa;
 }
 #else // fallback

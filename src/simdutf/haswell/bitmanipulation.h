@@ -17,7 +17,7 @@ simdutf_really_inline long long int count_ones(uint64_t input_num) {
 #endif
 
 #if SIMDUTF_NEED_TRAILING_ZEROES
-simdutf_inline int trailing_zeroes(uint64_t input_num) {
+simdutf_really_inline int trailing_zeroes(uint64_t input_num) {
   #if SIMDUTF_REGULAR_VISUAL_STUDIO
   return (int)_tzcnt_u64(input_num);
   #else  // SIMDUTF_REGULAR_VISUAL_STUDIO
@@ -25,6 +25,8 @@ simdutf_inline int trailing_zeroes(uint64_t input_num) {
   #endif // SIMDUTF_REGULAR_VISUAL_STUDIO
 }
 #endif
+
+template <typename T> bool is_power_of_two(T x) { return (x & (x - 1)) == 0; }
 
 } // unnamed namespace
 } // namespace SIMDUTF_IMPLEMENTATION

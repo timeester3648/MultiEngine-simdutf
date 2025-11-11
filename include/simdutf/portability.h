@@ -1,14 +1,36 @@
 #ifndef SIMDUTF_PORTABILITY_H
 #define SIMDUTF_PORTABILITY_H
 
+#include "simdutf/compiler_check.h"
+
+#include <cfloat>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
-#include <cfloat>
-#include <cassert>
 #ifndef _WIN32
   // strcasecmp, strncasecmp
   #include <strings.h>
+#endif
+
+#if defined(__apple_build_version__)
+  #if __apple_build_version__ < 14000000
+    #define SIMDUTF_SPAN_DISABLED                                              \
+      1 // apple-clang/13 doesn't support std::convertible_to
+  #endif
+#endif
+
+#if SIMDUTF_CPLUSPLUS20
+  #include <version>
+  #if __cpp_concepts >= 201907L && __cpp_lib_span >= 202002L &&                \
+      !defined(SIMDUTF_SPAN_DISABLED)
+    #define SIMDUTF_SPAN 1
+  #endif // __cpp_concepts >= 201907L && __cpp_lib_span >= 202002L
+  #if __cpp_lib_atomic_ref >= 201806L
+    #define SIMDUTF_ATOMIC_REF 1
+  #endif // __cpp_lib_atomic_ref
+  #if __has_cpp_attribute(maybe_unused) >= 201603L
+    #define SIMDUTF_MAYBE_UNUSED_AVAILABLE 1
+  #endif // __has_cpp_attribute(maybe_unused) >= 201603L
 #endif
 
 /**
@@ -87,20 +109,20 @@
 #elif defined(__aarch64__) || defined(_M_ARM64) || defined(_M_ARM64EC)
   #define SIMDUTF_IS_ARM64 1
 #elif defined(__PPC64__) || defined(_M_PPC64)
-// #define SIMDUTF_IS_PPC64 1
-//  The simdutf library does yet support SIMD acceleration under
-//  POWER processors. Please see https://github.com/lemire/simdutf/issues/51
+  #if defined(__VEC__) && defined(__ALTIVEC__)
+    #define SIMDUTF_IS_PPC64 1
+  #endif
 #elif defined(__s390__)
 // s390 IBM system. Big endian.
 #elif (defined(__riscv) || defined(__riscv__)) && __riscv_xlen == 64
   // RISC-V 64-bit
   #define SIMDUTF_IS_RISCV64 1
 
-  #if __clang_major__ >= 19
-    // Does the compiler support target regions for RISC-V
-    #define SIMDUTF_HAS_RVV_TARGET_REGION 1
-  #endif
-
+  // #if __riscv_v_intrinsic >= 1000000
+  //   #define SIMDUTF_HAS_RVV_INTRINSICS 1
+  //   #define SIMDUTF_HAS_RVV_TARGET_REGION 1
+  // #elif ...
+  //  Check for special compiler versions that implement pre v1.0 intrinsics
   #if __riscv_v_intrinsic >= 11000
     #define SIMDUTF_HAS_RVV_INTRINSICS 1
   #endif
@@ -119,7 +141,12 @@
   #endif
 
 #elif defined(__loongarch_lp64)
-// LoongArch 64-bit
+  #if defined(__loongarch_sx) && defined(__loongarch_asx)
+    #define SIMDUTF_IS_LSX 1
+    #define SIMDUTF_IS_LASX 1
+  #elif defined(__loongarch_sx)
+    #define SIMDUTF_IS_LSX 1
+  #endif
 #else
   // The simdutf library is designed
   // for 64-bit processors and it seems that you are not
@@ -227,31 +254,16 @@
   #define simdutf_strncasecmp strncasecmp
 #endif
 
-#ifdef NDEBUG
-
-  #ifdef SIMDUTF_VISUAL_STUDIO
-    #define SIMDUTF_UNREACHABLE() __assume(0)
-    #define SIMDUTF_ASSUME(COND) __assume(COND)
-  #else
-    #define SIMDUTF_UNREACHABLE() __builtin_unreachable();
-    #define SIMDUTF_ASSUME(COND)                                               \
-      do {                                                                     \
-        if (!(COND))                                                           \
-          __builtin_unreachable();                                             \
-      } while (0)
-  #endif
-
-#else // NDEBUG
-
-  #define SIMDUTF_UNREACHABLE() assert(0);
-  #define SIMDUTF_ASSUME(COND) assert(COND)
-
-#endif
-
 #if defined(__GNUC__) && !defined(__clang__)
   #if __GNUC__ >= 11
     #define SIMDUTF_GCC11ORMORE 1
   #endif //  __GNUC__ >= 11
+  #if __GNUC__ == 10
+    #define SIMDUTF_GCC10 1
+  #endif //  __GNUC__ == 10
+  #if __GNUC__ < 10
+    #define SIMDUTF_GCC9OROLDER 1
+  #endif //  __GNUC__ == 10
 #endif   // defined(__GNUC__) && !defined(__clang__)
 
 #endif // SIMDUTF_PORTABILITY_H
