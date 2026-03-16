@@ -1,9 +1,8 @@
 #include "simdutf.h"
 
+#include <tests/helpers/fixed_string.h>
 #include <tests/helpers/random_utf8.h>
 #include <tests/helpers/test.h>
-
-constexpr size_t num_trials = 1000;
 
 TEST(validate_utf8_with_errors_cbf29ce4842223f0) {
   const unsigned char data[] = {
@@ -42,7 +41,7 @@ TEST(copyright) {
   ASSERT_EQUAL(res.error, simdutf::error_code::SUCCESS);
 }
 
-TEST_LOOP(num_trials, no_error) {
+TEST_LOOP(no_error) {
   simdutf::tests::helpers::random_utf8 generator{seed, 1, 1, 1, 1};
   const auto utf8{generator.generate(512, seed)};
   simdutf::result res = implementation.validate_utf8_with_errors(
@@ -51,7 +50,7 @@ TEST_LOOP(num_trials, no_error) {
   ASSERT_EQUAL(res.count, utf8.size());
 }
 
-TEST_LOOP(num_trials, header_bits_error) {
+TEST_LOOP(header_bits_error) {
   simdutf::tests::helpers::random_utf8 generator{seed, 1, 1, 1, 1};
   auto utf8{generator.generate(512, seed)};
 
@@ -68,7 +67,7 @@ TEST_LOOP(num_trials, header_bits_error) {
   }
 }
 
-TEST_LOOP(num_trials, too_short_error) {
+TEST_LOOP(too_short_error) {
   simdutf::tests::helpers::random_utf8 generator{seed, 1, 1, 1, 1};
   auto utf8{generator.generate(512, seed)};
   int leading_byte_pos = 0;
@@ -89,7 +88,7 @@ TEST_LOOP(num_trials, too_short_error) {
   }
 }
 
-TEST_LOOP(num_trials, too_long_error) {
+TEST_LOOP(too_long_error) {
   simdutf::tests::helpers::random_utf8 generator{seed, 1, 1, 1, 1};
   auto utf8{generator.generate(512, seed)};
   for (unsigned int i = 1; i < 512; i++) {
@@ -107,7 +106,7 @@ TEST_LOOP(num_trials, too_long_error) {
   }
 }
 
-TEST_LOOP(num_trials, overlong_error) {
+TEST_LOOP(overlong_error) {
   simdutf::tests::helpers::random_utf8 generator{seed, 1, 1, 1, 1};
   auto utf8{generator.generate(512, seed)};
   for (unsigned int i = 1; i < 512; i++) {
@@ -136,7 +135,7 @@ TEST_LOOP(num_trials, overlong_error) {
   }
 }
 
-TEST_LOOP(num_trials, too_large_error) {
+TEST_LOOP(too_large_error) {
   simdutf::tests::helpers::random_utf8 generator{seed, 1, 1, 1, 1};
   auto utf8{generator.generate(512, seed)};
   for (unsigned int i = 1; i < 512; i++) {
@@ -155,7 +154,7 @@ TEST_LOOP(num_trials, too_large_error) {
   }
 }
 
-TEST_LOOP(num_trials, surrogate_error) {
+TEST_LOOP(surrogate_error) {
   simdutf::tests::helpers::random_utf8 generator{seed, 1, 1, 1, 1};
   auto utf8{generator.generate(512, seed)};
   for (unsigned int i = 1; i < 512; i++) {
@@ -177,5 +176,53 @@ TEST_LOOP(num_trials, surrogate_error) {
     }
   }
 }
+
+#if SIMDUTF_CPLUSPLUS23
+
+void compile_time_test_of_good_data() {
+
+  using namespace simdutf::tests::helpers;
+  constexpr auto good = u8"köttbulle"_utf8;
+
+  static_assert(good.size() == 10);
+  static_assert(!simdutf::validate_utf8_with_errors(good).error);
+  static_assert(
+      !simdutf::validate_utf8_with_errors(good.as_array<signed char>()).error);
+  static_assert(
+      !simdutf::validate_utf8_with_errors(good.as_array<unsigned char>())
+           .error);
+  static_assert(
+      !simdutf::validate_utf8_with_errors(good.as_array<std::byte>()).error);
+}
+
+namespace {
+template <typename DestCharType, typename ArrayInput>
+constexpr auto convert_array(const ArrayInput &input) {
+  std::array<DestCharType, ArrayInput{}.size()> ret;
+  for (std::size_t i = 0; i < ArrayInput{}.size(); ++i) {
+    ret[i] = static_cast<DestCharType>(input[i]);
+  }
+  return ret;
+}
+} // namespace
+
+void compile_time_test_of_bad_data() {
+  constexpr std::array bad_utf8{'a', '\xFF'};
+  static_assert(simdutf::validate_utf8_with_errors(bad_utf8).error !=
+                simdutf::SUCCESS);
+  static_assert(simdutf::validate_utf8_with_errors(bad_utf8).count == 1);
+  static_assert(
+      simdutf::validate_utf8_with_errors(convert_array<char>(bad_utf8)).error);
+  static_assert(
+      simdutf::validate_utf8_with_errors(convert_array<signed char>(bad_utf8))
+          .error);
+  static_assert(
+      simdutf::validate_utf8_with_errors(convert_array<unsigned char>(bad_utf8))
+          .error);
+  static_assert(
+      simdutf::validate_utf8_with_errors(convert_array<std::byte>(bad_utf8))
+          .error);
+}
+#endif
 
 TEST_MAIN

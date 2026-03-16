@@ -371,6 +371,76 @@ static inline uint64_t compress_block(block64 *b, uint64_t mask, char *output) {
   return count_ones(nmask);
 }
 
+template <typename T> bool is_power_of_two(T x) { return (x & (x - 1)) == 0; }
+
+inline size_t compress_block_single(block64 *b, uint64_t mask, char *output) {
+  const size_t pos64 = trailing_zeroes(mask);
+  const int8_t pos = pos64 & 0xf;
+
+  // Predefine the index vector
+  const v16u8 v1 = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
+
+  switch (pos64 >> 4) {
+  case 0b00: {
+    const __m128i lane0 = lasx_extracti128_lo(b->chunks[0]);
+    const __m128i lane1 = lasx_extracti128_hi(b->chunks[0]);
+
+    const __m128i v0 = __lsx_vreplgr2vr_b((uint8_t)(pos - 1));
+    const __m128i v2 = __lsx_vslt_b(v0, (__m128i)v1); // v1 > v0
+    const __m128i sh = __lsx_vsub_b((__m128i)v1, v2);
+    const __m128i compressed = __lsx_vshuf_b(lane0, lane0, sh);
+
+    __lsx_vst(compressed, reinterpret_cast<__m128i *>(output + 0 * 16), 0);
+    __lsx_vst(lane1, reinterpret_cast<__m128i *>(output + 1 * 16 - 1), 0);
+    __lasx_xvst(b->chunks[1], reinterpret_cast<__m256i *>(output + 2 * 16 - 1),
+                0);
+  } break;
+  case 0b01: {
+    const __m128i lane0 = lasx_extracti128_lo(b->chunks[0]);
+    const __m128i lane1 = lasx_extracti128_hi(b->chunks[0]);
+    __lsx_vst(lane0, reinterpret_cast<__m128i *>(output + 0 * 16), 0);
+
+    const __m128i v0 = __lsx_vreplgr2vr_b((uint8_t)(pos - 1));
+    const __m128i v2 = __lsx_vslt_b(v0, (__m128i)v1);
+    const __m128i sh = __lsx_vsub_b((__m128i)v1, v2);
+    const __m128i compressed = __lsx_vshuf_b(lane1, lane1, sh);
+
+    __lsx_vst(compressed, reinterpret_cast<__m128i *>(output + 1 * 16), 0);
+    __lasx_xvst(b->chunks[1], reinterpret_cast<__m256i *>(output + 2 * 16 - 1),
+                0);
+  } break;
+  case 0b10: {
+    __lasx_xvst(b->chunks[0], reinterpret_cast<__m256i *>(output + 0 * 16), 0);
+
+    const __m128i lane2 = lasx_extracti128_lo(b->chunks[1]);
+    const __m128i lane3 = lasx_extracti128_hi(b->chunks[1]);
+
+    const __m128i v0 = __lsx_vreplgr2vr_b((uint8_t)(pos - 1));
+    const __m128i v2 = __lsx_vslt_b(v0, (__m128i)v1);
+    const __m128i sh = __lsx_vsub_b((__m128i)v1, v2);
+    const __m128i compressed = __lsx_vshuf_b(lane2, lane2, sh);
+
+    __lsx_vst(compressed, reinterpret_cast<__m128i *>(output + 2 * 16), 0);
+    __lsx_vst(lane3, reinterpret_cast<__m128i *>(output + 3 * 16 - 1), 0);
+  } break;
+  case 0b11: {
+    __lasx_xvst(b->chunks[0], reinterpret_cast<__m256i *>(output + 0 * 16), 0);
+    __lsx_vst(lasx_extracti128_lo(b->chunks[1]),
+              reinterpret_cast<__m128i *>(output + 2 * 16), 0);
+
+    const __m128i lane3 = lasx_extracti128_hi(b->chunks[1]);
+
+    const __m128i v0 = __lsx_vreplgr2vr_b((uint8_t)(pos - 1));
+    const __m128i v2 = __lsx_vslt_b(v0, (__m128i)v1);
+    const __m128i sh = __lsx_vsub_b((__m128i)v1, v2);
+    const __m128i compressed = __lsx_vshuf_b(lane3, lane3, sh);
+
+    __lsx_vst(compressed, reinterpret_cast<__m128i *>(output + 3 * 16), 0);
+  } break;
+  }
+  return 63;
+}
+
 // The caller of this function is responsible to ensure that there are 64 bytes
 // available from reading at src. The data is read into a block64 structure.
 static inline void load_block(block64 *b, const char *src) {
@@ -414,7 +484,7 @@ static inline void base64_decode_block(char *out, const char *src) {
 
 static inline void base64_decode_block_safe(char *out, const char *src) {
   base64_decode(out, __lasx_xvld(reinterpret_cast<const __m256i *>(src), 0));
-  char buffer[32];
+  alignas(32) char buffer[32];
   base64_decode(buffer,
                 __lasx_xvld(reinterpret_cast<const __m256i *>(src), 32));
   std::memcpy(out + 24, buffer, 24);
@@ -426,7 +496,7 @@ static inline void base64_decode_block(char *out, block64 *b) {
 }
 static inline void base64_decode_block_safe(char *out, block64 *b) {
   base64_decode(out, b->chunks[0]);
-  char buffer[32];
+  alignas(32) char buffer[32];
   base64_decode(buffer, b->chunks[1]);
   std::memcpy(out + 24, buffer, 24);
 }
@@ -482,10 +552,11 @@ compress_decode_base64(char *dst, const chartype *src, size_t srclen,
                 size_t(dst - dstinit)};
       }
       if (badcharmask != 0) {
-        // optimization opportunity: check for simple masks like those made of
-        // continuous 1s followed by continuous 0s. And masks containing a
-        // single bad character.
-        bufferptr += compress_block(&b, badcharmask, bufferptr);
+        if (is_power_of_two(badcharmask)) {
+          bufferptr += compress_block_single(&b, badcharmask, bufferptr);
+        } else {
+          bufferptr += compress_block(&b, badcharmask, bufferptr);
+        }
       } else if (bufferptr != buffer) {
         copy_block(&b, bufferptr);
         bufferptr += 64;
@@ -549,6 +620,7 @@ compress_decode_base64(char *dst, const chartype *src, size_t srclen,
                          (uint32_t(uint8_t(buffer_start[2])) << 1 * 6) +
                          (uint32_t(uint8_t(buffer_start[3])) << 0 * 6))
                         << 8;
+      // lasx is little-endian
       triple = scalar::u32_swap_bytes(triple);
       std::memcpy(dst, &triple, 4);
 
@@ -561,6 +633,7 @@ compress_decode_base64(char *dst, const chartype *src, size_t srclen,
                          (uint32_t(uint8_t(buffer_start[2])) << 1 * 6) +
                          (uint32_t(uint8_t(buffer_start[3])) << 0 * 6))
                         << 8;
+      // lasx is little-endian
       triple = scalar::u32_swap_bytes(triple);
       std::memcpy(dst, &triple, 3);
 

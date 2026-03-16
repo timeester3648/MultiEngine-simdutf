@@ -1,7 +1,6 @@
 #include "simdutf.h"
 
 #include <array>
-#include <vector>
 
 #include <tests/helpers/transcode_test_base.h>
 #include <tests/helpers/random_int.h>
@@ -13,10 +12,9 @@ constexpr simdutf::endianness BE = simdutf::endianness::BIG;
 
 using simdutf::tests::helpers::transcode_utf16_to_latin1_test_base;
 
-constexpr int trials = 1000;
 } // namespace
 
-TEST_LOOP(trials, convert_2_UTF16_bytes) {
+TEST_LOOP(convert_2_UTF16_bytes) {
   // range for 1, 2 or 3 UTF-8 bytes
   simdutf::tests::helpers::RandomInt random(0x0000, 0x00ff, seed);
 

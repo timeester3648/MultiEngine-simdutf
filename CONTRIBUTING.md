@@ -2,6 +2,8 @@
 
 Thank you for your interest in contributing to **simdutf**, a high-performance library for UTF-8, UTF-16, and UTF-32 transcoding as well as other formats such as base64 using SIMD instructions. We welcome contributions to enhance the project’s speed, reliability, and usability. This guide outlines how to contribute effectively.
 
+Please also review our [AI Usage Policy](AI_USAGE_POLICY.md).
+
 ## Table of Contents
 - [Ways to Contribute](#ways-to-contribute)
   - [Reporting Bugs](#reporting-bugs)
@@ -27,6 +29,8 @@ To report a bug, open an issue on the [GitHub Issues page](https://github.com/si
 - Relevant logs or code snippets.
 
 We prefer that you use our bug template.
+
+A compiler or static-analyzer warning is not a bug. It is possible with tools such as Visual Studio to require that rarely enabled warnings are considered errors. Do not report such cases as bugs. We do accept pull requests if you want to silence warnings issued by code analyzers, however.
 
 ### Suggesting Features
 
@@ -107,6 +111,18 @@ Comments: Document complex logic clearly. It is fine to use multiple lines of te
 
 Dependencies: Avoid new external dependencies unless approved.
 
+
+## Adding functions
+
+Adding a new function to simdutf can require some effort. We wrote a python
+script to generate it. Consider running the python script:
+
+```shell
+python3 scripts/add_function.py add.sig
+```
+
+Read [README_ADD_FUNCTION.md](scripts/README_ADD_FUNCTION.md) for details.
+
 ## Testing
 
 All changes must have been tested.
@@ -120,7 +136,7 @@ ctest --test-dir build
 Add tests in the tests/directory for new features or fixes, covering edge cases and performance.
 Use our macros when building tests:
 
-```C++
+```cpp
 
 TEST(roundtrip_base64_url_with_garbage) {
     ASSERT_TRUE(1==1);

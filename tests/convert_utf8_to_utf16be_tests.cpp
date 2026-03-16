@@ -4,9 +4,11 @@
 #include <memory>
 #include <vector>
 
-#include <tests/helpers/transcode_test_base.h>
+#include <tests/helpers/compiletime_conversions.h>
+#include <tests/helpers/fixed_string.h>
 #include <tests/helpers/random_int.h>
 #include <tests/helpers/test.h>
+#include <tests/helpers/transcode_test_base.h>
 
 namespace {
 constexpr std::array<size_t, 7> input_size{7, 16, 12, 64, 67, 128, 256};
@@ -14,7 +16,6 @@ constexpr simdutf::endianness BE = simdutf::endianness::BIG;
 
 using simdutf::tests::helpers::transcode_utf8_to_utf16_test_base;
 
-constexpr size_t trials = 10000;
 } // namespace
 
 TEST(issue_631) {
@@ -233,7 +234,7 @@ TEST(issue_convert_valid_utf8_to_utf16le_91498ee0f0fe77dd) {
   ASSERT_EQUAL(outlen, 64);
 }
 
-TEST_LOOP(trials, convert_pure_ASCII) {
+TEST_LOOP(convert_pure_ASCII) {
   size_t counter = 0;
   auto generator = [&counter]() -> uint32_t { return counter++ & 0x7f; };
 
@@ -253,7 +254,7 @@ TEST_LOOP(trials, convert_pure_ASCII) {
   }
 }
 
-TEST_LOOP(trials, convert_1_or_2_UTF8_bytes) {
+TEST_LOOP(convert_1_or_2_UTF8_bytes) {
   simdutf::tests::helpers::RandomInt random(
       0x0000, 0x07ff, seed); // range for 1 or 2 UTF-8 bytes
 
@@ -272,7 +273,7 @@ TEST_LOOP(trials, convert_1_or_2_UTF8_bytes) {
   }
 }
 
-TEST_LOOP(trials, convert_1_or_2_or_3_UTF8_bytes) {
+TEST_LOOP(convert_1_or_2_or_3_UTF8_bytes) {
   // range for 1, 2 or 3 UTF-8 bytes
   simdutf::tests::helpers::RandomIntRanges random(
       {{0x0000, 0xd7ff}, {0xe000, 0xffff}}, seed);
@@ -292,7 +293,7 @@ TEST_LOOP(trials, convert_1_or_2_or_3_UTF8_bytes) {
   }
 }
 
-TEST_LOOP(trials, convert_3_or_4_UTF8_bytes) {
+TEST_LOOP(convert_3_or_4_UTF8_bytes) {
   simdutf::tests::helpers::RandomIntRanges random(
       {{0x0800, 0xd800 - 1}, {0xe000, 0x10ffff}},
       seed); // range for 3 or 4 UTF-8 bytes
@@ -313,7 +314,7 @@ TEST_LOOP(trials, convert_3_or_4_UTF8_bytes) {
   }
 }
 
-TEST_LOOP(trials, convert_2_UTF8_bytes) {
+TEST_LOOP(convert_2_UTF8_bytes) {
   simdutf::tests::helpers::RandomInt random(0x0080, 0x07ff,
                                             seed); // range for 2 UTF-8 bytes
 
@@ -333,7 +334,7 @@ TEST_LOOP(trials, convert_2_UTF8_bytes) {
   }
 }
 
-TEST_LOOP(trials, convert_3_UTF8_bytes) {
+TEST_LOOP(convert_3_UTF8_bytes) {
   simdutf::tests::helpers::RandomInt random(0x0800, 0xd800 - 1,
                                             seed); // range for 3 UTF-8 bytes
 
@@ -364,5 +365,48 @@ TEST(special_cases) {
   ASSERT_EQUAL(utf16size, utf16len);
   ASSERT_EQUAL(memcmp((const char *)utf16.get(), expected, 2), 0);
 }
+
+#if SIMDUTF_CPLUSPLUS23
+
+namespace {
+
+template <std::endian target_endianness, auto input> constexpr auto convert() {
+  using namespace simdutf::tests::helpers;
+  constexpr auto Nout = simdutf::utf16_length_from_utf8(input);
+  CTString<char16_t, Nout, target_endianness> tmp{};
+  std::size_t N;
+  if constexpr (target_endianness == std::endian::native) {
+    N = simdutf::convert_utf8_to_utf16(input, tmp);
+  }
+  if (N != input.size()) {
+    throw "oops";
+  }
+  return tmp;
+}
+
+} // namespace
+
+TEST(compile_time_convert_utf8_to_utf16) {
+  using namespace simdutf::tests::helpers;
+
+  constexpr auto input = u8"hello I am over 16 byte long"_utf8;
+  constexpr auto expected = u"hello I am over 16 byte long"_utf16;
+  constexpr auto output = convert<std::endian::native, input>();
+  static_assert(output.size() == expected.size());
+  static_assert(output == expected);
+}
+
+TEST(compile_time_convert_utf8_to_utf16be) {
+  using namespace simdutf::tests::helpers;
+
+  constexpr auto input = u8"hello I am over 16 byte long"_utf8;
+  constexpr auto expected = u"hello I am over 16 byte long"_utf16be;
+  constexpr bool with_errors = false;
+  constexpr auto output = utf8_to_utf16<std::endian::big, with_errors, input>();
+  static_assert(output.size() == expected.size());
+  static_assert(output == expected);
+}
+
+#endif
 
 TEST_MAIN

@@ -2,6 +2,7 @@
 
 #include <array>
 
+#include <tests/helpers/fixed_string.h>
 #include <tests/helpers/random_int.h>
 #include <tests/helpers/random_utf16.h>
 #include <tests/helpers/test.h>
@@ -10,10 +11,9 @@ namespace {
 constexpr std::array<size_t, 9> input_size{7,   12,  16,  64,  67,
                                            128, 256, 511, 1000};
 
-constexpr size_t trials = 10000;
 } // namespace
 
-TEST_LOOP(trials, count_just_one_word) {
+TEST_LOOP(count_just_one_word) {
   simdutf::tests::helpers::random_utf16 random(seed, 1, 0);
 
   for (size_t size : input_size) {
@@ -23,7 +23,7 @@ TEST_LOOP(trials, count_just_one_word) {
   }
 }
 
-TEST_LOOP(trials, count_1_or_2_UTF16_words) {
+TEST_LOOP(count_1_or_2_UTF16_words) {
   simdutf::tests::helpers::random_utf16 random(seed, 1, 1);
 
   for (size_t size : input_size) {
@@ -33,7 +33,7 @@ TEST_LOOP(trials, count_1_or_2_UTF16_words) {
   }
 }
 
-TEST_LOOP(trials, count_2_UTF16_words) {
+TEST_LOOP(count_2_UTF16_words) {
   simdutf::tests::helpers::random_utf16 random(seed, 0, 1);
 
   for (size_t size : input_size) {
@@ -42,5 +42,20 @@ TEST_LOOP(trials, count_2_UTF16_words) {
                  generated.second);
   }
 }
+
+#if SIMDUTF_CPLUSPLUS23
+
+TEST(compile_time_count_utf16) {
+  using namespace simdutf::tests::helpers;
+
+  static_assert(simdutf::count_utf16(u"köttbulle"_utf16) == 9);
+}
+
+TEST(compile_time_count_utf16le) {
+  using namespace simdutf::tests::helpers;
+
+  static_assert(simdutf::count_utf16(u"köttbulle"_utf16le) == 9);
+}
+#endif
 
 TEST_MAIN

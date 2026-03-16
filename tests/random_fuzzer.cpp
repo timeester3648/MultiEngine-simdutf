@@ -51,7 +51,10 @@ void dump_case() {
   log.close();
 }
 
-void __asan_on_error() { dump_case(); }
+void __asan_on_error() {
+  printf("asan\n");
+  dump_case();
+}
 }
 
 template <typename T> bool check_alignment(T *ptr, size_t alignment) {
@@ -163,6 +166,15 @@ bool fuzz_this(const char *data, size_t size) {
       // We need a buffer where to write the UTF-8 code units.
       size_t expected_utf8words =
           e->utf8_length_from_utf16le(utf16_output.get(), utf16words);
+      simdutf::result expected_utf8words_with_replacement =
+          e->utf8_length_from_utf16le_with_replacement(utf16_output.get(),
+                                                       utf16words);
+      if (expected_utf8words != expected_utf8words_with_replacement.count) {
+        printf("Mismatch between replacement and standard utf8 length from "
+               "utf16le\n");
+        print_input(source, e);
+        return false;
+      }
       std::unique_ptr<char[]> utf8_output{new char[expected_utf8words]};
       // convert to UTF-8
       size_t utf8words = e->convert_utf16le_to_utf8(
@@ -741,7 +753,10 @@ int main(int argc, char *argv[]) {
     }
     printf("testing: %s\n", e->name().c_str());
   }
-  size_t N = 10000;
+#ifndef SIMDUTF_TEST_FUZZER_TRIALS
+  #error "SIMDUTF_TEST_FUZZER_TRIALS not set."
+#endif
+  std::size_t N = SIMDUTF_TEST_FUZZER_TRIALS;
   if (argc == 2) {
     try {
       N = std::stoi(argv[1]);

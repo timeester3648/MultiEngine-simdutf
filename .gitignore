@@ -22,6 +22,12 @@ singleheader/singleheader.zip
 .cache/clangd/
 corpus/
 
+# generated documentation
+README.generated.md
+
+# generated documentation
+README.generated.md
+
 # exclude project files
 **.sln
 **.vcxproj

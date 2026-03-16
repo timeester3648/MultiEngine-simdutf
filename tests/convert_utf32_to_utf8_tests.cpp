@@ -3,16 +3,16 @@
 #include <array>
 #include <memory>
 
-#include <tests/helpers/transcode_test_base.h>
+#include <tests/helpers/fixed_string.h>
 #include <tests/helpers/random_int.h>
 #include <tests/helpers/test.h>
+#include <tests/helpers/transcode_test_base.h>
 
 namespace {
 std::array<size_t, 7> input_size{7, 16, 12, 64, 67, 128, 256};
 
 using simdutf::tests::helpers::transcode_utf32_to_utf8_test_base;
 
-constexpr int trials = 1000;
 } // namespace
 
 TEST(convert_pure_ASCII) {
@@ -35,7 +35,7 @@ TEST(convert_pure_ASCII) {
   }
 }
 
-TEST_LOOP(trials, convert_into_1_or_2_UTF8_bytes) {
+TEST_LOOP(convert_into_1_or_2_UTF8_bytes) {
   simdutf::tests::helpers::RandomInt random(
       0x0000, 0x07ff, seed); // range for 1 or 2 UTF-8 bytes
 
@@ -54,7 +54,7 @@ TEST_LOOP(trials, convert_into_1_or_2_UTF8_bytes) {
   }
 }
 
-TEST_LOOP(trials, convert_into_1_or_2_or_3_UTF8_bytes) {
+TEST_LOOP(convert_into_1_or_2_or_3_UTF8_bytes) {
   // range for 1, 2 or 3 UTF-8 bytes
   simdutf::tests::helpers::RandomIntRanges random(
       {{0x0000, 0x007f}, {0x0080, 0x07ff}, {0x0800, 0xd7ff}, {0xe000, 0xffff}},
@@ -75,7 +75,7 @@ TEST_LOOP(trials, convert_into_1_or_2_or_3_UTF8_bytes) {
   }
 }
 
-TEST_LOOP(trials, convert_into_3_or_4_UTF8_bytes) {
+TEST_LOOP(convert_into_3_or_4_UTF8_bytes) {
   // range for 3 or 4 UTF-8 bytes
   simdutf::tests::helpers::RandomIntRanges random(
       {{0x0800, 0xd800 - 1}, {0xe000, 0x10ffff}}, seed);
@@ -149,5 +149,33 @@ TEST(special_cases) {
   }
   ASSERT_EQUAL(utf8size, utf8len);
 }
+
+#if SIMDUTF_CPLUSPLUS23
+
+namespace {
+template <auto input> constexpr auto size() {
+  return simdutf::utf8_length_from_utf32(input);
+}
+
+template <auto input> constexpr auto convert() {
+  using namespace simdutf::tests::helpers;
+  CTString<char8_t, size<input>()> tmp;
+  const auto ret = simdutf::convert_utf32_to_utf8(input, tmp);
+  if (ret != tmp.size()) {
+    throw "unexpected write size";
+  }
+  return tmp;
+}
+} // namespace
+
+TEST(compile_time_convert_utf32_to_utf8) {
+  using namespace simdutf::tests::helpers;
+  constexpr auto input = U"köttbulle"_utf32;
+  constexpr auto expected = u8"köttbulle"_utf8;
+  constexpr auto output = convert<input>();
+  static_assert(output == expected);
+}
+
+#endif
 
 TEST_MAIN

@@ -3,17 +3,17 @@
 #include <array>
 #include <vector>
 
-#include <tests/reference/validate_utf8_to_latin1.h>
-#include <tests/helpers/transcode_test_base.h>
+#include <tests/helpers/fixed_string.h>
 #include <tests/helpers/random_int.h>
 #include <tests/helpers/test.h>
+#include <tests/helpers/transcode_test_base.h>
+#include <tests/reference/validate_utf8_to_latin1.h>
 
 namespace {
 std::array<size_t, 7> input_size{7, 16, 12, 64, 67, 128, 256};
 
 using simdutf::tests::helpers::transcode_utf8_to_latin1_test_base;
 
-constexpr size_t trials = 10000;
 } // namespace
 
 // triggered by https://oss-fuzz.com/testcase-detail/4942454003924992,
@@ -426,7 +426,7 @@ TEST(issue_convert_utf8_to_latin1_cbf29ce4842223c9) {
 }
 
 // For invalid UTF-8, we expect the conversion to fail (return 0)
-TEST_LOOP(trials, convert_random_inputs) {
+TEST_LOOP(convert_random_inputs) {
   simdutf::tests::helpers::RandomInt r(0x00, 0xff, seed);
 
   for (size_t size : input_size) {
@@ -447,7 +447,7 @@ TEST_LOOP(trials, convert_random_inputs) {
   }
 }
 
-TEST_LOOP(trials, convert_pure_ASCII) {
+TEST_LOOP(convert_pure_ASCII) {
   size_t counter = 0;
   auto generator = [&counter]() -> uint8_t { return counter++ & 0x7f; };
 
@@ -467,7 +467,7 @@ TEST_LOOP(trials, convert_pure_ASCII) {
   }
 }
 
-TEST_LOOP(trials, convert_1_or_2_valid_UTF8_bytes_to_latin1) {
+TEST_LOOP(convert_1_or_2_valid_UTF8_bytes_to_latin1) {
   simdutf::tests::helpers::RandomInt random(
       0x0000, 0x0ff, seed); // range for 1 or 2 UTF-8 bytes
 
@@ -485,5 +485,32 @@ TEST_LOOP(trials, convert_1_or_2_valid_UTF8_bytes_to_latin1) {
     ASSERT_TRUE(test.check_size(size_procedure));
   }
 }
+
+#if SIMDUTF_CPLUSPLUS23
+
+namespace {
+
+template <auto input> constexpr auto convert() {
+  using namespace simdutf::tests::helpers;
+  CTString<char, input.size()> tmp;
+  auto N = simdutf::convert_utf8_to_latin1(input, tmp);
+  if (N != input.size()) {
+    throw "oops";
+  }
+  return tmp;
+}
+
+} // namespace
+
+TEST(compile_time_convert_utf8_to_latin1) {
+  using namespace simdutf::tests::helpers;
+
+  constexpr auto input = u8"hello I am over 16 byte long"_utf8;
+  constexpr auto expected = "hello I am over 16 byte long"_latin1;
+  constexpr auto output = convert<input>();
+  static_assert(output == expected);
+}
+
+#endif
 
 TEST_MAIN

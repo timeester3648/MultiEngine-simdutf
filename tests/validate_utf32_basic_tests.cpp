@@ -1,11 +1,10 @@
 #include "simdutf.h"
 
-#include <array>
-
+#include <tests/helpers/fixed_string.h>
 #include <tests/helpers/random_utf32.h>
 #include <tests/helpers/test.h>
 
-TEST_LOOP(1000, validate_utf32_returns_true_for_valid_input) {
+TEST_LOOP(validate_utf32_returns_true_for_valid_input) {
   simdutf::tests::helpers::random_utf32 generator{seed};
   const auto utf32{generator.generate(256, seed)};
 
@@ -23,7 +22,7 @@ TEST(validate_utf32_returns_true_for_empty_string) {
   ASSERT_TRUE(implementation.validate_utf32(buf, 0));
 }
 
-TEST_LOOP(10, validate_utf32_returns_false_when_input_in_forbidden_range) {
+TEST_LOOP(validate_utf32_returns_false_when_input_in_forbidden_range) {
   simdutf::tests::helpers::random_utf32 generator{seed};
   auto utf32{generator.generate(128)};
   const char32_t *buf = reinterpret_cast<const char32_t *>(utf32.data());
@@ -42,7 +41,7 @@ TEST_LOOP(10, validate_utf32_returns_false_when_input_in_forbidden_range) {
   }
 }
 
-TEST_LOOP(1000, validate_utf32_returns_false_when_input_too_large) {
+TEST_LOOP(validate_utf32_returns_false_when_input_too_large) {
   simdutf::tests::helpers::random_utf32 generator{seed};
 
   std::uniform_int_distribution<uint32_t> bad_range{0x110000, 0xffffffff};
@@ -65,5 +64,29 @@ TEST_LOOP(1000, validate_utf32_returns_false_when_input_too_large) {
     }
   }
 }
+
+#if SIMDUTF_CPLUSPLUS23
+
+namespace {
+constexpr auto make_bad() {
+  using namespace simdutf::tests::helpers;
+  auto bad = U"I am bad: ?"_utf32;
+  bad[bad.size() - 1] = 0x10FFFF + 1;
+  return bad;
+}
+
+} // namespace
+
+TEST(compile_time_validate) {
+  using namespace simdutf::tests::helpers;
+
+  constexpr auto good = U"I am a nice and wellbehaved string"_utf32;
+  static_assert(simdutf::validate_utf32(good));
+
+  constexpr auto bad = make_bad();
+  static_assert(not simdutf::validate_utf32(bad));
+}
+
+#endif
 
 TEST_MAIN

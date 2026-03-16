@@ -17,9 +17,19 @@ enum error_code {
              // U+10FFFF,less than or equal than U+7F for ASCII OR less than
              // equal than U+FF for Latin1
   SURROGATE, // The decoded character must be not be in U+D800...DFFF (UTF-8 or
-             // UTF-32) OR a high surrogate must be followed by a low surrogate
+             // UTF-32)
+             // OR
+             // a high surrogate must be followed by a low surrogate
              // and a low surrogate must be preceded by a high surrogate
-             // (UTF-16) OR there must be no surrogate at all (Latin1)
+             // (UTF-16)
+             // OR
+             // there must be no surrogate at all and one is
+             // found (Latin1 functions)
+             // OR
+             // *specifically* for the function
+             // utf8_length_from_utf16_with_replacement, a surrogate (whether
+             // in error or not) has been found (I.e., whether we are in the
+             // Basic Multilingual Plane or not).
   INVALID_BASE64_CHARACTER, // Found a character that cannot be part of a valid
                             // base64 string. This may include a misplaced
                             // padding character ('=').
@@ -68,17 +78,18 @@ struct result {
                 // case of success, indicates the number of code units
                 // validated/written.
 
-  simdutf_really_inline result() noexcept
+  simdutf_really_inline simdutf_constexpr23 result() noexcept
       : error{error_code::SUCCESS}, count{0} {}
 
-  simdutf_really_inline result(error_code err, size_t pos) noexcept
+  simdutf_really_inline simdutf_constexpr23 result(error_code err,
+                                                   size_t pos) noexcept
       : error{err}, count{pos} {}
 
-  simdutf_really_inline bool is_ok() const noexcept {
+  simdutf_really_inline simdutf_constexpr23 bool is_ok() const noexcept {
     return error == error_code::SUCCESS;
   }
 
-  simdutf_really_inline bool is_err() const noexcept {
+  simdutf_really_inline simdutf_constexpr23 bool is_err() const noexcept {
     return error != error_code::SUCCESS;
   }
 };
@@ -90,18 +101,19 @@ struct full_result {
   bool padding_error = false; // true if the error is due to padding, only
                               // meaningful when error is not SUCCESS
 
-  simdutf_really_inline full_result() noexcept
+  simdutf_really_inline simdutf_constexpr23 full_result() noexcept
       : error{error_code::SUCCESS}, input_count{0}, output_count{0} {}
 
-  simdutf_really_inline full_result(error_code err, size_t pos_in,
-                                    size_t pos_out) noexcept
+  simdutf_really_inline simdutf_constexpr23 full_result(error_code err,
+                                                        size_t pos_in,
+                                                        size_t pos_out) noexcept
       : error{err}, input_count{pos_in}, output_count{pos_out} {}
-  simdutf_really_inline full_result(error_code err, size_t pos_in,
-                                    size_t pos_out, bool padding_err) noexcept
+  simdutf_really_inline simdutf_constexpr23 full_result(
+      error_code err, size_t pos_in, size_t pos_out, bool padding_err) noexcept
       : error{err}, input_count{pos_in}, output_count{pos_out},
         padding_error{padding_err} {}
 
-  simdutf_really_inline operator result() const noexcept {
+  simdutf_really_inline simdutf_constexpr23 operator result() const noexcept {
     if (error == error_code::SUCCESS) {
       return result{error, output_count};
     } else {

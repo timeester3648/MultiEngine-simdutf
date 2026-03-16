@@ -3,10 +3,11 @@
 #include <array>
 #include <vector>
 
-#include <tests/reference/validate_utf16.h>
-#include <tests/helpers/transcode_test_base.h>
+#include <tests/helpers/fixed_string.h>
 #include <tests/helpers/random_int.h>
 #include <tests/helpers/test.h>
+#include <tests/helpers/transcode_test_base.h>
+#include <tests/reference/validate_utf16.h>
 
 namespace {
 constexpr std::array<size_t, 7> input_size{7, 16, 12, 64, 67, 128, 256};
@@ -14,10 +15,9 @@ constexpr simdutf::endianness BE = simdutf::endianness::BIG;
 
 using simdutf::tests::helpers::transcode_utf16_to_utf32_test_base;
 
-constexpr int trials = 1000;
 } // namespace
 
-TEST_LOOP(trials, convert_2_UTF16_bytes) {
+TEST_LOOP(convert_2_UTF16_bytes) {
   // range for 2-byte UTF-16 (no surrogate pairs)
   simdutf::tests::helpers::RandomIntRanges random(
       {{0x0000, 0x007f}, {0x0080, 0x07ff}, {0x0800, 0xd7ff}, {0xe000, 0xffff}},
@@ -34,7 +34,7 @@ TEST_LOOP(trials, convert_2_UTF16_bytes) {
   }
 }
 
-TEST_LOOP(trials, convert_with_surrogate_pairs) {
+TEST_LOOP(convert_with_surrogate_pairs) {
   // some surrogate pairs
   simdutf::tests::helpers::RandomIntRanges random(
       {{0x0800, 0xd800 - 1}, {0xe000, 0x10ffff}}, seed);
@@ -67,4 +67,31 @@ TEST(all_possible_8_codepoint_combinations) {
   }
 }
 
+#if SIMDUTF_CPLUSPLUS23
+
+namespace {
+template <auto input> constexpr auto size_be() {
+  return simdutf::utf32_length_from_utf16le(input);
+}
+
+template <auto input> constexpr auto convert_be() {
+  using namespace simdutf::tests::helpers;
+  CTString<char32_t, size_be<input>()> tmp;
+  const auto ret = simdutf::convert_valid_utf16be_to_utf32(input, tmp);
+  if (ret != tmp.size()) {
+    throw "unexpected write size";
+  }
+  return tmp;
+}
+} // namespace
+
+TEST(compile_time_convert_valid_utf16be_to_utf32) {
+  using namespace simdutf::tests::helpers;
+  constexpr auto input = u"köttbulle"_utf16be;
+  constexpr auto expected = U"köttbulle"_utf32;
+  constexpr auto output = convert_be<input>();
+  static_assert(output == expected);
+}
+
+#endif
 TEST_MAIN

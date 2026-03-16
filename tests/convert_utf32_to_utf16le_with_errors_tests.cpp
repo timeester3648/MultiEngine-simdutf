@@ -3,9 +3,10 @@
 #include <array>
 #include <vector>
 
-#include <tests/helpers/transcode_test_base.h>
+#include <tests/helpers/fixed_string.h>
 #include <tests/helpers/random_int.h>
 #include <tests/helpers/test.h>
+#include <tests/helpers/transcode_test_base.h>
 
 namespace {
 const std::array<size_t, 7> input_size{7, 16, 12, 64, 67, 128, 256};
@@ -13,7 +14,6 @@ constexpr simdutf::endianness LE = simdutf::endianness::LITTLE;
 
 using simdutf::tests::helpers::transcode_utf32_to_utf16_test_base;
 
-constexpr int trials = 1000;
 } // namespace
 
 TEST(issue_convert_utf32_to_utf16le_with_errors_97798701a75ebb21) {
@@ -42,7 +42,7 @@ TEST(issue_convert_utf32_to_utf16le_with_errors_97798701a75ebb21) {
   ASSERT_EQUAL(r.count, 0);
 }
 
-TEST_LOOP(trials, convert_into_2_UTF16_bytes) {
+TEST_LOOP(convert_into_2_UTF16_bytes) {
   // range for 2 UTF-16 bytes
   simdutf::tests::helpers::RandomIntRanges random(
       {{0x0000, 0xd7ff}, {0xe000, 0xffff}}, seed);
@@ -65,7 +65,7 @@ TEST_LOOP(trials, convert_into_2_UTF16_bytes) {
   }
 }
 
-TEST_LOOP(trials, convert_into_4_UTF16_bytes) {
+TEST_LOOP(convert_into_4_UTF16_bytes) {
   // range for 4 UTF-16 bytes
   simdutf::tests::helpers::RandomIntRanges random({{0x10000, 0x10ffff}}, seed);
 
@@ -87,7 +87,7 @@ TEST_LOOP(trials, convert_into_4_UTF16_bytes) {
   }
 }
 
-TEST_LOOP(trials, convert_into_2_or_4_UTF16_bytes) {
+TEST_LOOP(convert_into_2_or_4_UTF16_bytes) {
   // range for 2 or 4 UTF-16 bytes (all codepoints)
   simdutf::tests::helpers::RandomIntRanges random(
       {{0x0000, 0xd7ff}, {0xe000, 0xffff}, {0x10000, 0x10ffff}}, seed);
@@ -159,5 +159,57 @@ TEST(convert_fails_if_input_too_large) {
     }
   }
 }
+
+#if SIMDUTF_CPLUSPLUS23
+
+namespace {
+template <auto input> constexpr auto size() {
+  return simdutf::utf16_length_from_utf32(input);
+}
+template <auto input> constexpr auto convert() {
+  using namespace simdutf::tests::helpers;
+  CTString<char16_t, size<input>()> tmp;
+  const auto ret = simdutf::convert_utf32_to_utf16_with_errors(input, tmp);
+  if (ret.count != tmp.size()) {
+    throw "unexpected write size";
+  }
+  return tmp;
+}
+} // namespace
+
+TEST(compile_time_convert_utf32_to_utf16_with_errors) {
+  using namespace simdutf::tests::helpers;
+
+  constexpr auto input = U"köttbulle"_utf32;
+  constexpr auto expected = u"köttbulle"_utf16;
+  constexpr bool with_errors = true;
+  constexpr auto output = convert<input>();
+  static_assert(output == expected);
+}
+
+namespace {
+
+template <auto input> constexpr auto convert_le() {
+  using namespace simdutf::tests::helpers;
+  CTString<char16_t, size<input>(), std::endian::little> tmp;
+  const auto ret = simdutf::convert_utf32_to_utf16le_with_errors(input, tmp);
+  if (ret.count != tmp.size()) {
+    throw "unexpected write size";
+  }
+  return tmp;
+}
+} // namespace
+
+TEST(compile_time_convert_utf32_to_utf16le_with_errors) {
+  using namespace simdutf::tests::helpers;
+
+  constexpr auto input = U"köttbulle"_utf32;
+  constexpr auto expected = u"köttbulle"_utf16le;
+  constexpr bool with_errors = true;
+  constexpr auto output = convert_le<input>();
+  static_assert(output == expected);
+}
+
+#endif
 
 TEST_MAIN

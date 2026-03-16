@@ -310,9 +310,10 @@ template <> struct simd8<int8_t> {
   //    ...
   template <endianness big_endian>
   simdutf_really_inline void store_ascii_as_utf16(char16_t *p) const {
-    int8x16x2_t pair = match_system(big_endian)
-                           ? int8x16x2_t{{this->value, vmovq_n_s8(0)}}
-                           : int8x16x2_t{{vmovq_n_s8(0), this->value}};
+    simdutf_constexpr auto matches = match_system(big_endian);
+    const int8x16x2_t pair = matches
+                                 ? int8x16x2_t{{this->value, vmovq_n_s8(0)}}
+                                 : int8x16x2_t{{vmovq_n_s8(0), this->value}};
     vst2q_s8(reinterpret_cast<int8_t *>(p), pair);
   }
 
@@ -509,6 +510,12 @@ template <typename T> struct simd8x64 {
     const simd8<T> mask = simd8<T>::splat(m);
     return simd8x64<bool>(this->chunks[0] > mask, this->chunks[1] > mask,
                           this->chunks[2] > mask, this->chunks[3] > mask)
+        .to_bitmask();
+  }
+  simdutf_really_inline uint64_t gteq(const T m) const {
+    const simd8<T> mask = simd8<T>::splat(m);
+    return simd8x64<bool>(this->chunks[0] >= mask, this->chunks[1] >= mask,
+                          this->chunks[2] >= mask, this->chunks[3] >= mask)
         .to_bitmask();
   }
   simdutf_really_inline uint64_t gteq_unsigned(const uint8_t m) const {

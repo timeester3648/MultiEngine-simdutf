@@ -3,10 +3,11 @@
 #include <array>
 #include <vector>
 
-#include <tests/reference/validate_utf16_to_latin1.h>
-#include <tests/helpers/transcode_test_base.h>
+#include <tests/helpers/fixed_string.h>
 #include <tests/helpers/random_int.h>
 #include <tests/helpers/test.h>
+#include <tests/helpers/transcode_test_base.h>
+#include <tests/reference/validate_utf16_to_latin1.h>
 
 namespace {
 constexpr std::array<size_t, 7> input_size{7, 16, 12, 64, 67, 128, 256};
@@ -14,11 +15,10 @@ constexpr simdutf::endianness BE = simdutf::endianness::BIG;
 
 using simdutf::tests::helpers::transcode_utf16_to_latin1_test_base;
 
-constexpr int trials = 1000;
 } // namespace
 
 // For invalid inputs, we expect the conversion to fail (return 0)
-TEST_LOOP(trials, convert_random_inputs) {
+TEST_LOOP(convert_random_inputs) {
   simdutf::tests::helpers::RandomInt r(0x00, 0xffff, seed);
 
   for (size_t size : input_size) {
@@ -39,7 +39,7 @@ TEST_LOOP(trials, convert_random_inputs) {
   }
 }
 
-TEST_LOOP(trials, convert_2_UTF16_bytes) {
+TEST_LOOP(convert_2_UTF16_bytes) {
   // range for 1, 2 or 3 UTF-8 bytes
   simdutf::tests::helpers::RandomInt random(0x0000, 0x00ff, seed);
 
@@ -81,5 +81,29 @@ TEST(convert_fails_if_input_too_large) {
     }
   }
 }
+
+#if SIMDUTF_CPLUSPLUS23
+
+namespace {
+template <auto input> constexpr auto convert_be() {
+  using namespace simdutf::tests::helpers;
+  CTString<char, input.size()> tmp;
+  const auto ret = simdutf::convert_utf16be_to_latin1(input, tmp);
+  if (ret != input.size()) {
+    throw "unexpected write size";
+  }
+  return tmp;
+}
+} // namespace
+
+TEST(compile_time_convert_utf16be_to_latin1) {
+  using namespace simdutf::tests::helpers;
+  constexpr auto input = u"köttbulle"_utf16be;
+  constexpr auto expected = "k\xF6ttbulle"_latin1;
+  constexpr auto output = convert_be<input>();
+  static_assert(output == expected);
+}
+
+#endif
 
 TEST_MAIN

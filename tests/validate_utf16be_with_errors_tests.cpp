@@ -3,13 +3,12 @@
 #include <array>
 #include <vector>
 
+#include <tests/helpers/fixed_string.h>
 #include <tests/helpers/random_utf16.h>
 #include <tests/helpers/test.h>
 #include <tests/helpers/utf16.h>
 
-constexpr size_t trials = 1000;
-
-TEST_LOOP(trials, validate_utf16be_returns_true_for_valid_input_single_words) {
+TEST_LOOP(validate_utf16be_returns_true_for_valid_input_single_words) {
   simdutf::tests::helpers::random_utf16 generator{seed, 1, 0};
   const auto utf16{generator.generate_be(512, seed)};
 
@@ -19,8 +18,7 @@ TEST_LOOP(trials, validate_utf16be_returns_true_for_valid_input_single_words) {
   ASSERT_EQUAL(res.count, utf16.size());
 }
 
-TEST_LOOP(trials,
-          validate_utf16be_returns_true_for_valid_input_surrogate_pairs_short) {
+TEST_LOOP(validate_utf16be_returns_true_for_valid_input_surrogate_pairs_short) {
   simdutf::tests::helpers::random_utf16 generator{seed, 0, 1};
   const auto utf16{generator.generate_be(8)};
 
@@ -30,8 +28,7 @@ TEST_LOOP(trials,
   ASSERT_EQUAL(res.count, utf16.size());
 }
 
-TEST_LOOP(trials,
-          validate_utf16be_returns_true_for_valid_input_surrogate_pairs) {
+TEST_LOOP(validate_utf16be_returns_true_for_valid_input_surrogate_pairs) {
   simdutf::tests::helpers::random_utf16 generator{seed, 0, 1};
   const auto utf16{generator.generate_be(512)};
 
@@ -95,7 +92,7 @@ TEST(provoke_integer_wraparound_in_icelake) {
       is in error [...]
 */
 TEST_LOOP(
-    10, validate_utf16be_returns_false_when_input_has_wrong_first_word_value) {
+    validate_utf16be_returns_false_when_input_has_wrong_first_word_value) {
   simdutf::tests::helpers::random_utf16 generator{seed, 1, 0};
   auto utf16{generator.generate_be(128)};
   const size_t len = utf16.size();
@@ -172,5 +169,20 @@ TEST(validate_utf16be_returns_false_when_input_is_truncated) {
     ASSERT_EQUAL(res.count, size - 1);
   }
 }
+
+#if SIMDUTF_CPLUSPLUS23
+
+TEST(compile_time_validation_with_errors_native) {
+  using namespace simdutf::tests::helpers;
+  static_assert(simdutf::validate_utf16_with_errors(u"hello!"_utf16).is_ok());
+}
+
+TEST(compile_time_validation_with_errors_big) {
+  using namespace simdutf::tests::helpers;
+  static_assert(
+      simdutf::validate_utf16be_with_errors(u"hello!"_utf16be).is_ok());
+}
+
+#endif
 
 TEST_MAIN
