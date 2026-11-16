@@ -31,35 +31,32 @@
  */
 inline uint8x16_t insert_line_feed16(uint8x16_t input, size_t K) {
   static const uint8_t shuffle_masks[16][16] = {
-      {0x80, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
-      {0, 0x80, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
-      {0, 1, 0x80, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
-      {0, 1, 2, 0x80, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
-      {0, 1, 2, 3, 0x80, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
-      {0, 1, 2, 3, 4, 0x80, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
-      {0, 1, 2, 3, 4, 5, 0x80, 6, 7, 8, 9, 10, 11, 12, 13, 14},
-      {0, 1, 2, 3, 4, 5, 6, 0x80, 7, 8, 9, 10, 11, 12, 13, 14},
-      {0, 1, 2, 3, 4, 5, 6, 7, 0x80, 8, 9, 10, 11, 12, 13, 14},
-      {0, 1, 2, 3, 4, 5, 6, 7, 8, 0x80, 9, 10, 11, 12, 13, 14},
-      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0x80, 10, 11, 12, 13, 14},
-      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0x80, 11, 12, 13, 14},
-      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0x80, 12, 13, 14},
-      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 0x80, 13, 14},
-      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 0x80, 14},
-      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 0x80}};
-  // Prepare a vector with '\n' (0x0A)
-  uint8x16_t line_feed_vector = vdupq_n_u8('\n');
+      {15, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 15, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 15, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 15, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 15, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 15, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 15, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 15, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 15, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 15, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 15, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}};
+  // Add '\n' (0x0A) at the end of input vector
+  uint8x16_t input_with_line_feed_vector = vsetq_lane_u8('\n', input, 15);
 
   // Load the precomputed shuffle mask for K
   uint8x16_t mask = vld1q_u8(shuffle_masks[K]);
 
-  // Create a mask where 0x80 indicates the line feed position
-  uint8x16_t lf_pos = vceqq_u8(mask, vdupq_n_u8(0x80));
+  // Perform the shuffle to reposition the K bytes including '\n'
+  uint8x16_t result = vqtbl1q_u8(input_with_line_feed_vector, mask);
 
-  uint8x16_t result = vqtbl1q_u8(input, mask);
-
-  // Use vbsl to select '\n' where lf_pos is true, else keep input bytes
-  return vbslq_u8(lf_pos, line_feed_vector, result);
+  return result;
 }
 
 // offset is the number of characters in the current line.
@@ -123,31 +120,20 @@ size_t encode_base64_impl(char *dst, const char *src, size_t srclen,
   }
   // credit: Wojciech Muła
   uint8_t *out = (uint8_t *)dst;
-  constexpr static uint8_t source_table[64] = {
-      'A', 'Q', 'g', 'w', 'B', 'R', 'h', 'x', 'C', 'S', 'i', 'y', 'D',
-      'T', 'j', 'z', 'E', 'U', 'k', '0', 'F', 'V', 'l', '1', 'G', 'W',
-      'm', '2', 'H', 'X', 'n', '3', 'I', 'Y', 'o', '4', 'J', 'Z', 'p',
-      '5', 'K', 'a', 'q', '6', 'L', 'b', 'r', '7', 'M', 'c', 's', '8',
-      'N', 'd', 't', '9', 'O', 'e', 'u', '+', 'P', 'f', 'v', '/',
-  };
-  constexpr static uint8_t source_table_url[64] = {
-      'A', 'Q', 'g', 'w', 'B', 'R', 'h', 'x', 'C', 'S', 'i', 'y', 'D',
-      'T', 'j', 'z', 'E', 'U', 'k', '0', 'F', 'V', 'l', '1', 'G', 'W',
-      'm', '2', 'H', 'X', 'n', '3', 'I', 'Y', 'o', '4', 'J', 'Z', 'p',
-      '5', 'K', 'a', 'q', '6', 'L', 'b', 'r', '7', 'M', 'c', 's', '8',
-      'N', 'd', 't', '9', 'O', 'e', 'u', '-', 'P', 'f', 'v', '_',
-  };
   const uint8x16_t v3f = vdupq_n_u8(0x3f);
 #ifdef SIMDUTF_REGULAR_VISUAL_STUDIO
   // When trying to load a uint8_t array, Visual Studio might
   // error with: error C2664: '__n128x4 neon_ld4m_q8(const char *)':
   // cannot convert argument 1 from 'const uint8_t [64]' to 'const char *
-  const uint8x16x4_t table = vld4q_u8(
-      (reinterpret_cast<const char *>(options & base64_url) ? source_table_url
-                                                            : source_table));
+  const uint8x16x4_t table =
+      vld1q_u8_x4((reinterpret_cast<const char *>(options & base64_url)
+                       ? tables::base64::base64_url::e1
+                       : tables::base64::base64_default::e1));
 #else
   const uint8x16x4_t table =
-      vld4q_u8((options & base64_url) ? source_table_url : source_table);
+      vld1q_u8_x4(reinterpret_cast<const unsigned char *>(
+          (options & base64_url) ? tables::base64::base64_url::e1
+                                 : tables::base64::base64_default::e1));
 #endif
   size_t i = 0;
   for (; i + 16 * 3 <= srclen; i += 16 * 3) {
@@ -249,6 +235,41 @@ size_t encode_base64_impl(char *dst, const char *src, size_t srclen,
     }
     i += 24;
   }
+
+  if (i + 12 <= srclen) {
+    // Load exactly 12 bytes, then deinterleave them like vld3_u8 would:
+    // only the first four lanes of each vector matter.
+    uint32_t last4;
+    std::memcpy(&last4, src + i + 8, sizeof(last4));
+    const uint8x16_t raw = vcombine_u8(vld1_u8((const uint8_t *)src + i),
+                                       vreinterpret_u8_u32(vdup_n_u32(last4)));
+    const uint8x8_t in0 = vqtbl1_u8(raw, vcreate_u8(0x0906030009060300));
+    const uint8x8_t in1 = vqtbl1_u8(raw, vcreate_u8(0x0a0704010a070401));
+    const uint8x8_t in2 = vqtbl1_u8(raw, vcreate_u8(0x0b0805020b080502));
+    const uint8x8_t v3f_d = vdup_n_u8(0x3f);
+    uint8x8x4_t result;
+    result.val[0] = vshr_n_u8(in0, 2);
+    result.val[1] = vand_u8(vsli_n_u8(vshr_n_u8(in1, 4), in0, 4), v3f_d);
+    result.val[2] = vand_u8(vsli_n_u8(vshr_n_u8(in2, 6), in1, 2), v3f_d);
+    result.val[3] = vand_u8(in2, v3f_d);
+    result.val[0] = vqtbl4_u8(table, result.val[0]);
+    result.val[1] = vqtbl4_u8(table, result.val[1]);
+    result.val[2] = vqtbl4_u8(table, result.val[2]);
+    result.val[3] = vqtbl4_u8(table, result.val[3]);
+    const uint8x8_t Z0 = vzip1_u8(result.val[0], result.val[1]);
+    const uint8x8_t Z1 = vzip1_u8(result.val[2], result.val[3]);
+    const uint16x4x2_t Z2 =
+        vzip_u16(vreinterpret_u16_u8(Z0), vreinterpret_u16_u8(Z1));
+    const uint8x16_t encoded = vcombine_u8(vreinterpret_u8_u16(Z2.val[0]),
+                                           vreinterpret_u8_u16(Z2.val[1]));
+    if (insert_line_feeds) {
+      out += write_output_with_line_feeds(out, encoded, line_length, offset);
+    } else {
+      vst1q_u8(out, encoded);
+      out += 16;
+    }
+    i += 12;
+  }
   out += scalar::base64::tail_encode_base64_impl<insert_line_feeds>(
       (char *)out, src + i, srclen - i, options, line_length, offset);
   return size_t((char *)out - dst);
@@ -314,7 +335,7 @@ uint64_t to_base64_mask(block64 *b, bool *error) {
   if (default_or_url) {
     lut_lo =
         simdutf_make_uint8x16_t(0xa9, 0xf8, 0xf8, 0xf8, 0xf8, 0xf8, 0xf8, 0xf8,
-                                0xf8, 0xf9, 0xf1, 0xa2, 0xa1, 0xa5, 0xa0, 0xa6);
+                                0xf8, 0xf9, 0xf1, 0xa2, 0xa1, 0xa5, 0xa0, 0xb6);
   } else if (base64_url) {
     lut_lo =
         simdutf_make_uint8x16_t(0xa9, 0xf8, 0xf8, 0xf8, 0xf8, 0xf8, 0xf8, 0xf8,
@@ -327,7 +348,7 @@ uint64_t to_base64_mask(block64 *b, bool *error) {
 #else
   if (default_or_url) {
     lut_lo = uint8x16_t{0xa9, 0xf8, 0xf8, 0xf8, 0xf8, 0xf8, 0xf8, 0xf8,
-                        0xf8, 0xf9, 0xf1, 0xa2, 0xa1, 0xa5, 0xa0, 0xa6};
+                        0xf8, 0xf9, 0xf1, 0xa2, 0xa1, 0xa5, 0xa0, 0xb6};
   } else if (base64_url) {
     lut_lo = uint8x16_t{0xa9, 0xf8, 0xf8, 0xf8, 0xf8, 0xf8, 0xf8, 0xf8,
                         0xf8, 0xf9, 0xf1, 0xa0, 0xa1, 0xa5, 0xa0, 0xa2};
@@ -345,10 +366,10 @@ uint64_t to_base64_mask(block64 *b, bool *error) {
   if (default_or_url) {
     lut_hi =
         simdutf_make_uint8x16_t(0x0, 0x1, 0x0, 0x0, 0x1, 0x6, 0x8, 0x8, 0x10,
-                                0x20, 0x20, 0x12, 0x40, 0x80, 0x80, 0x40);
+                                0x20, 0x20, 0x10, 0x40, 0x80, 0x80, 0x40);
   } else if (base64_url) {
     lut_hi =
-        simdutf_make_uint8x16_t(0x0, 0x1, 0x0, 0x0, 0x1, 0x6, 0x8, 0x8, 0x10,
+        simdutf_make_uint8x16_t(0x0, 0x1, 0x0, 0x0, 0x1, 0x4, 0x8, 0x8, 0x10,
                                 0x20, 0x20, 0x12, 0x40, 0x80, 0x80, 0x40);
   } else {
     lut_hi =
@@ -358,7 +379,7 @@ uint64_t to_base64_mask(block64 *b, bool *error) {
 #else
   if (default_or_url) {
     lut_hi = uint8x16_t{0x0,  0x1,  0x0,  0x0,  0x1,  0x6,  0x8,  0x8,
-                        0x10, 0x20, 0x20, 0x12, 0x40, 0x80, 0x80, 0x40};
+                        0x10, 0x20, 0x20, 0x10, 0x40, 0x80, 0x80, 0x40};
   } else if (base64_url) {
     lut_hi = uint8x16_t{0x0,  0x1,  0x0,  0x0,  0x1,  0x4,  0x8,  0x8,
                         0x10, 0x20, 0x20, 0x12, 0x40, 0x80, 0x80, 0x40};
@@ -522,6 +543,33 @@ void load_block(block64 *b, const char16_t *src) {
   b->chunks[3] = load_satured(reinterpret_cast<const uint16_t *>(src) + 48);
 }
 
+uint64_t equal_sign_mask(const block64 &b) {
+  const uint8x16_t equal = vdupq_n_u8('=');
+  uint8x16_t test0 = vceqq_u8(b.chunks[0], equal);
+  uint8x16_t test1 = vceqq_u8(b.chunks[1], equal);
+  uint8x16_t test2 = vceqq_u8(b.chunks[2], equal);
+  uint8x16_t test3 = vceqq_u8(b.chunks[3], equal);
+  if (vmaxvq_u8(vorrq_u8(vorrq_u8(test0, test1), vorrq_u8(test2, test3))) ==
+      0) {
+    return 0;
+  }
+#ifdef SIMDUTF_REGULAR_VISUAL_STUDIO
+  const uint8x16_t bit_mask =
+      simdutf_make_uint8x16_t(0x01, 0x02, 0x4, 0x8, 0x10, 0x20, 0x40, 0x80,
+                              0x01, 0x02, 0x4, 0x8, 0x10, 0x20, 0x40, 0x80);
+#else
+  const uint8x16_t bit_mask = {0x01, 0x02, 0x4, 0x8, 0x10, 0x20, 0x40, 0x80,
+                               0x01, 0x02, 0x4, 0x8, 0x10, 0x20, 0x40, 0x80};
+#endif
+  uint8x16_t sum0 =
+      vpaddq_u8(vandq_u8(test0, bit_mask), vandq_u8(test1, bit_mask));
+  uint8x16_t sum1 =
+      vpaddq_u8(vandq_u8(test2, bit_mask), vandq_u8(test3, bit_mask));
+  sum0 = vpaddq_u8(sum0, sum1);
+  sum0 = vpaddq_u8(sum0, sum0);
+  return vgetq_lane_u64(vreinterpretq_u64_u8(sum0), 0);
+}
+
 // decode 64 bytes and output 48 bytes
 void base64_decode_block(char *out, const char *src) {
   uint8x16x4_t str = vld4q_u8((uint8_t *)src);
@@ -617,20 +665,23 @@ compress_decode_base64(char *dst, const char_type *src, size_t srclen,
       default_or_url ? tables::base64::to_base64_default_or_url_value
                      : (base64_url ? tables::base64::to_base64_url_value
                                    : tables::base64::to_base64_value);
-  auto ri = simdutf::scalar::base64::find_end(src, srclen, options);
+  auto ri =
+      ignore_garbage
+          ? simdutf::scalar::base64::reduced_input{0, srclen, srclen, srclen}
+          : simdutf::scalar::base64::find_end(src, srclen, options);
   size_t equallocation = ri.equallocation;
   size_t equalsigns = ri.equalsigns;
   srclen = ri.srclen;
   size_t full_input_length = ri.full_input_length;
   if (srclen == 0) {
     if (!ignore_garbage && equalsigns > 0) {
-      return {INVALID_BASE64_CHARACTER, equallocation, 0};
+      return {INVALID_BASE64_CHARACTER, equallocation, 0, true};
     }
     return {SUCCESS, full_input_length, 0};
   }
   const char_type *const srcinit = src;
   const char *const dstinit = dst;
-  const char_type *const srcend = src + srclen;
+  const char_type *srcend = src + srclen;
 
   constexpr size_t block_size = 10;
   char buffer[block_size * 64];
@@ -640,6 +691,7 @@ compress_decode_base64(char *dst, const char_type *src, size_t srclen,
     while (src <= srcend64) {
       block64 b;
       load_block(&b, src);
+      const block64 raw = b;
       src += 64;
       bool error = false;
       uint64_t badcharmask =
@@ -659,6 +711,24 @@ compress_decode_base64(char *dst, const char_type *src, size_t srclen,
         }
       }
 
+      if (ignore_garbage && badcharmask != 0) {
+        const uint64_t equals = equal_sign_mask(raw);
+        if (equals != 0) {
+          const size_t offset = trailing_zeroes(equals);
+          equallocation = size_t(src - 64 - srcinit) + offset;
+          equalsigns = 1;
+          srclen = equallocation;
+          full_input_length = equallocation + 1;
+          if (srclen == 0) {
+            return {SUCCESS, full_input_length, 0};
+          }
+          srcend = srcinit + srclen;
+          src = srcend;
+          bufferptr += compress_block(
+              &b, badcharmask | (~uint64_t(0) << offset), bufferptr);
+          break;
+        }
+      }
       if (badcharmask != 0) {
         // optimization opportunity: check for simple masks like those made of
         // continuous 1s followed by continuous 0s. And masks containing a
@@ -685,6 +755,22 @@ compress_decode_base64(char *dst, const char_type *src, size_t srclen,
       }
     }
   }
+  if (ignore_garbage && equalsigns == 0) {
+    const char_type *equal = src;
+    while (equal < srcend && *equal != '=') {
+      equal++;
+    }
+    if (equal < srcend) {
+      equallocation = size_t(equal - srcinit);
+      equalsigns = 1;
+      srclen = equallocation;
+      full_input_length = equallocation + 1;
+      if (srclen == 0) {
+        return {SUCCESS, full_input_length, 0};
+      }
+      srcend = equal;
+    }
+  }
   char *buffer_start = buffer;
   // Optimization note: if this is almost full, then it is worth our
   // time, otherwise, we should just decode directly.
@@ -698,7 +784,7 @@ compress_decode_base64(char *dst, const char_type *src, size_t srclen,
         return {error_code::INVALID_BASE64_CHARACTER, size_t(src - srcinit),
                 size_t(dst - dstinit)};
       }
-      bufferptr += (val <= 63);
+      bufferptr += (val <= 63 && scalar::base64::is_eight_byte(*src));
       src++;
     }
   }
@@ -717,7 +803,7 @@ compress_decode_base64(char *dst, const char_type *src, size_t srclen,
 #if !SIMDUTF_IS_BIG_ENDIAN
       triple = scalar::u32_swap_bytes(triple);
 #endif
-      std::memcpy(dst, &triple, 4);
+      std::memcpy(dst, &triple, 3);
 
       dst += 3;
       buffer_start += 4;
@@ -745,7 +831,8 @@ compress_decode_base64(char *dst, const char_type *src, size_t srclen,
           src--;
         }
       } else {
-        while (to_base64[uint8_t(*(src - 1))] >= 64) {
+        while (!scalar::base64::is_eight_byte(*(src - 1)) ||
+               to_base64[uint8_t(*(src - 1))] >= 64) {
           src--;
         }
       }
@@ -784,8 +871,9 @@ compress_decode_base64(char *dst, const char_type *src, size_t srclen,
   if (equalsigns > 0 && !ignore_garbage) {
     if ((size_t(dst - dstinit) % 3 == 0) ||
         ((size_t(dst - dstinit) % 3) + 1 + equalsigns != 4)) {
-      return {INVALID_BASE64_CHARACTER, equallocation, size_t(dst - dstinit)};
+      return {INVALID_BASE64_CHARACTER, equallocation, size_t(dst - dstinit),
+              true};
     }
   }
-  return {SUCCESS, srclen, size_t(dst - dstinit)};
+  return {SUCCESS, full_input_length, size_t(dst - dstinit)};
 }

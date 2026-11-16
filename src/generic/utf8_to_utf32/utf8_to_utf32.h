@@ -125,22 +125,57 @@ struct validating_transcoder {
     this->error |= check_multibyte_lengths(input, prev_input, sc);
   }
 
+  simdutf_really_inline size_t convert_ascii_tail(const char *in, size_t pos,
+                                                  size_t size,
+                                                  char32_t *output) {
+    // A cheap test on the first bytes avoids any SIMD work for most non-ASCII
+    // tails.
+    if (size - pos >= 8) {
+      uint64_t first_bytes;
+      std::memcpy(&first_bytes, in + pos, 8);
+      if (first_bytes & 0x8080808080808080) {
+        return 0;
+      }
+    }
+    const size_t start = pos;
+    while (pos + 64 <= size) {
+      simd8x64<int8_t> input(reinterpret_cast<const int8_t *>(in + pos));
+      if (!input.is_ascii()) {
+        return pos - start;
+      }
+      input.store_ascii_as_utf32(output + (pos - start));
+      pos += 64;
+    }
+    if (pos == size || size < 64) {
+      return pos - start;
+    }
+    simd8x64<int8_t> input(reinterpret_cast<const int8_t *>(in + size - 64));
+    if (!input.is_ascii()) {
+      return pos - start;
+    }
+    input.store_ascii_as_utf32(output + (pos - start) - (pos - (size - 64)));
+    return size - start;
+  }
+
   simdutf_really_inline size_t convert(const char *in, size_t size,
                                        char32_t *utf32_output) {
+    if (size < 64) { // too short for the main loop
+      return scalar::utf8_to_utf32::convert(in, size, utf32_output);
+    }
     size_t pos = 0;
     char32_t *start{utf32_output};
     // In the worst case, we have the haswell kernel which can cause an overflow
-    // of 8 words when calling convert_masked_utf8_to_utf32. If you skip the
+    // of 4 words when calling convert_masked_utf8_to_utf32. If you skip the
     // last 16 bytes, and if the data is valid, then it is entirely safe because
-    // 16 UTF-8 bytes generate much more than 8 bytes. However, you cannot
+    // 16 UTF-8 bytes generate at least 4 words. However, you cannot
     // generally assume that you have valid UTF-8 input, so we are going to go
-    // back from the end counting 16 leading bytes, to give us a good margin.
+    // back from the end counting 8 leading bytes, to give us a good margin.
     size_t leading_byte = 0;
     size_t margin = size;
     for (; margin > 0 && leading_byte < 8; margin--) {
       leading_byte += (int8_t(in[margin - 1]) > -65);
     }
-    // If the input is long enough, then we have that margin-1 is the fourth
+    // If the input is long enough, then we have that margin is the eighth
     // last leading byte.
     const size_t safety_margin = size - margin + 1; // to avoid overruns!
     while (pos + 64 + safety_margin <= size) {
@@ -157,10 +192,10 @@ struct validating_transcoder {
                 (simd8x64<uint8_t>::NUM_CHUNKS == 4),
             "We support either two or four chunks per 64-byte block.");
         auto zero = simd8<uint8_t>{uint8_t(0)};
-        if (simd8x64<uint8_t>::NUM_CHUNKS == 2) {
+        if constexpr (simd8x64<uint8_t>::NUM_CHUNKS == 2) {
           this->check_utf8_bytes(input.chunks[0], zero);
           this->check_utf8_bytes(input.chunks[1], input.chunks[0]);
-        } else if (simd8x64<uint8_t>::NUM_CHUNKS == 4) {
+        } else if constexpr (simd8x64<uint8_t>::NUM_CHUNKS == 4) {
           this->check_utf8_bytes(input.chunks[0], zero);
           this->check_utf8_bytes(input.chunks[1], input.chunks[0]);
           this->check_utf8_bytes(input.chunks[2], input.chunks[1]);
@@ -201,25 +236,32 @@ struct validating_transcoder {
     if (errors()) {
       return 0;
     }
-    if (pos < size) {
-      size_t howmany =
-          scalar::utf8_to_utf32::convert(in + pos, size - pos, utf32_output);
-      if (howmany == 0) {
-        return 0;
-      }
-      utf32_output += howmany;
+    const size_t ascii = convert_ascii_tail(in, pos, size, utf32_output);
+    pos += ascii;
+    utf32_output += ascii;
+    if (pos == size) {
+      return utf32_output - start;
     }
-    return utf32_output - start;
+    SIMDUTF_VZEROUPPER();
+    size_t howmany =
+        scalar::utf8_to_utf32::convert(in + pos, size - pos, utf32_output);
+    if (howmany == 0) {
+      return 0;
+    }
+    return utf32_output + howmany - start;
   }
 
   simdutf_really_inline result convert_with_errors(const char *in, size_t size,
                                                    char32_t *utf32_output) {
+    if (size < 64) { // too short for the main loop
+      return scalar::utf8_to_utf32::convert_with_errors(in, size, utf32_output);
+    }
     size_t pos = 0;
     char32_t *start{utf32_output};
     // In the worst case, we have the haswell kernel which can cause an overflow
-    // of 8 bytes when calling convert_masked_utf8_to_utf32. If you skip the
+    // of 4 words when calling convert_masked_utf8_to_utf32. If you skip the
     // last 16 bytes, and if the data is valid, then it is entirely safe because
-    // 16 UTF-8 bytes generate much more than 8 bytes. However, you cannot
+    // 16 UTF-8 bytes generate at least 4 words. However, you cannot
     // generally assume that you have valid UTF-8 input, so we are going to go
     // back from the end counting 8 leading bytes, to give us a good margin.
     size_t leading_byte = 0;
@@ -227,7 +269,7 @@ struct validating_transcoder {
     for (; margin > 0 && leading_byte < 8; margin--) {
       leading_byte += (int8_t(in[margin - 1]) > -65);
     }
-    // If the input is long enough, then we have that margin-1 is the fourth
+    // If the input is long enough, then we have that margin is the eighth
     // last leading byte.
     const size_t safety_margin = size - margin + 1; // to avoid overruns!
     while (pos + 64 + safety_margin <= size) {
@@ -244,10 +286,10 @@ struct validating_transcoder {
                 (simd8x64<uint8_t>::NUM_CHUNKS == 4),
             "We support either two or four chunks per 64-byte block.");
         auto zero = simd8<uint8_t>{uint8_t(0)};
-        if (simd8x64<uint8_t>::NUM_CHUNKS == 2) {
+        if constexpr (simd8x64<uint8_t>::NUM_CHUNKS == 2) {
           this->check_utf8_bytes(input.chunks[0], zero);
           this->check_utf8_bytes(input.chunks[1], input.chunks[0]);
-        } else if (simd8x64<uint8_t>::NUM_CHUNKS == 4) {
+        } else if constexpr (simd8x64<uint8_t>::NUM_CHUNKS == 4) {
           this->check_utf8_bytes(input.chunks[0], zero);
           this->check_utf8_bytes(input.chunks[1], input.chunks[0]);
           this->check_utf8_bytes(input.chunks[2], input.chunks[1]);
@@ -255,6 +297,7 @@ struct validating_transcoder {
         }
         uint64_t utf8_continuation_mask = input.lt(-65 + 1);
         if (errors() || (utf8_continuation_mask & 1)) {
+          SIMDUTF_VZEROUPPER();
           result res = scalar::utf8_to_utf32::rewind_and_convert_with_errors(
               pos, in + pos, size - pos, utf32_output);
           res.count += pos;
@@ -288,22 +331,24 @@ struct validating_transcoder {
         // 85% to 90% efficiency.
       }
     }
-    if (errors()) {
-      result res = scalar::utf8_to_utf32::rewind_and_convert_with_errors(
-          pos, in + pos, size - pos, utf32_output);
+    const size_t ascii = convert_ascii_tail(in, pos, size, utf32_output);
+    pos += ascii;
+    utf32_output += ascii;
+    if (pos == size) {
+      return result(error_code::SUCCESS, utf32_output - start);
+    }
+    // rewind_and_convert_with_errors will seek a potential error from in+pos
+    // onward, with the ability to go back up to pos bytes, and read size-pos
+    // bytes forward.
+    SIMDUTF_VZEROUPPER();
+    result res = scalar::utf8_to_utf32::rewind_and_convert_with_errors(
+        pos, in + pos, size - pos, utf32_output);
+    if (res.error) { // In case of error, we want the error position
       res.count += pos;
       return res;
     }
-    if (pos < size) {
-      result res = scalar::utf8_to_utf32::rewind_and_convert_with_errors(
-          pos, in + pos, size - pos, utf32_output);
-      if (res.error) { // In case of error, we want the error position
-        res.count += pos;
-        return res;
-      } else { // In case of success, we want the number of word written
-        utf32_output += res.count;
-      }
-    }
+    // In case of success, we want the number of words written
+    utf32_output += res.count;
     return result(error_code::SUCCESS, utf32_output - start);
   }
 

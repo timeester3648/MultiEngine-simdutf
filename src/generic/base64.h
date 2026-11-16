@@ -47,56 +47,94 @@ compress_decode_base64(char *dst, const chartype *src, size_t srclen,
       default_or_url ? tables::base64::to_base64_default_or_url_value
                      : (base64_url ? tables::base64::to_base64_url_value
                                    : tables::base64::to_base64_value);
-  auto ri = simdutf::scalar::base64::find_end(src, srclen, options);
+  auto ri =
+      ignore_garbage
+          ? simdutf::scalar::base64::reduced_input{0, srclen, srclen, srclen}
+          : simdutf::scalar::base64::find_end(src, srclen, options);
   size_t equallocation = ri.equallocation;
   size_t equalsigns = ri.equalsigns;
   srclen = ri.srclen;
   size_t full_input_length = ri.full_input_length;
   if (srclen == 0) {
     if (!ignore_garbage && equalsigns > 0) {
-      return {INVALID_BASE64_CHARACTER, equallocation, 0};
+      return {INVALID_BASE64_CHARACTER, equallocation, 0, true};
     }
     return {SUCCESS, full_input_length, 0};
   }
-  char *end_of_safe_64byte_zone =
-      dst == nullptr
-          ? nullptr
-          : ((srclen + 3) / 4 * 3 >= 63 ? dst + (srclen + 3) / 4 * 3 - 63
-                                        : dst);
-
   const chartype *const srcinit = src;
   const char *const dstinit = dst;
-  const chartype *const srcend = src + srclen;
+  const chartype *srcend = src + srclen;
 
   constexpr size_t block_size = 6;
   static_assert(block_size >= 2, "block_size must be at least two");
   char buffer[block_size * 64];
   char *bufferptr = buffer;
+  // A wide block store writes 4 bytes past its 48. That is safe when the next
+  // store starts 48 bytes later. Pairs of clean blocks wide-store the first
+  // and end the second on byte 48. Anything shorter, or a block that is not
+  // clean, uses the exact store. The pair attempt is only worth it on a long
+  // input: a short one often fails the first block and then repeats that work.
+  if (srclen >= 512) {
+    const chartype *const srcend128 = src + srclen - 128;
+    while (bufferptr == buffer && src <= srcend128) {
+      block64 b0(src);
+      uint64_t e0 = 0;
+      const uint64_t m0 =
+          b0.to_base64_mask<base64_url, ignore_garbage, default_or_url>(&e0);
+      if ((!ignore_garbage && e0) || m0 != 0) {
+        break;
+      }
+      block64 b1(src + 64);
+      uint64_t e1 = 0;
+      const uint64_t m1 =
+          b1.to_base64_mask<base64_url, ignore_garbage, default_or_url>(&e1);
+      if ((!ignore_garbage && e1) || m1 != 0) {
+        break;
+      }
+      b0.base64_decode_block(dst);
+      b1.template base64_decode_block<true>(dst + 48);
+      src += 128;
+      dst += 96;
+    }
+  }
   if (srclen >= 64) {
-    const chartype *const srcend64 = src + srclen - 64;
+    const chartype *const srcend64 = srcinit + srclen - 64;
     while (src <= srcend64) {
       block64 b(src);
-      src += 64;
       uint64_t error = 0;
       const uint64_t badcharmask =
           b.to_base64_mask<base64_url, ignore_garbage, default_or_url>(&error);
       if (!ignore_garbage && error) {
-        src -= 64;
         const size_t error_offset = trailing_zeroes(error);
         return {error_code::INVALID_BASE64_CHARACTER,
                 size_t(src - srcinit + error_offset), size_t(dst - dstinit)};
       }
+      if (ignore_garbage && badcharmask != 0) {
+        const uint64_t equals = block64(src).equal_sign_mask();
+        if (equals != 0) {
+          const size_t offset = trailing_zeroes(equals);
+          equallocation = size_t(src - srcinit) + offset;
+          equalsigns = 1;
+          srclen = equallocation;
+          full_input_length = equallocation + 1;
+          if (srclen == 0) {
+            return {SUCCESS, full_input_length, 0};
+          }
+          srcend = srcinit + srclen;
+          src = srcend;
+          bufferptr += b.compress_block(badcharmask | (~uint64_t(0) << offset),
+                                        bufferptr);
+          break;
+        }
+      }
+      src += 64;
       if (badcharmask != 0) {
         bufferptr += b.compress_block(badcharmask, bufferptr);
       } else if (bufferptr != buffer) {
         b.copy_block(bufferptr);
         bufferptr += 64;
       } else {
-        if (dst >= end_of_safe_64byte_zone) {
-          b.base64_decode_block_safe(dst);
-        } else {
-          b.base64_decode_block(dst);
-        }
+        b.template base64_decode_block<true>(dst);
         dst += 48;
       }
       if (bufferptr >= (block_size - 1) * 64 + buffer) {
@@ -104,11 +142,7 @@ compress_decode_base64(char *dst, const chartype *src, size_t srclen,
           base64_decode_block(dst, buffer + i * 64);
           dst += 48;
         }
-        if (dst >= end_of_safe_64byte_zone) {
-          base64_decode_block_safe(dst, buffer + (block_size - 2) * 64);
-        } else {
-          base64_decode_block(dst, buffer + (block_size - 2) * 64);
-        }
+        base64_decode_block<true>(dst, buffer + (block_size - 2) * 64);
         dst += 48;
         std::memcpy(buffer, buffer + (block_size - 1) * 64,
                     64); // 64 might be too much
@@ -117,6 +151,22 @@ compress_decode_base64(char *dst, const chartype *src, size_t srclen,
     }
   }
 
+  if (ignore_garbage && equalsigns == 0) {
+    const chartype *equal = src;
+    while (equal < srcend && *equal != '=') {
+      equal++;
+    }
+    if (equal < srcend) {
+      equallocation = size_t(equal - srcinit);
+      equalsigns = 1;
+      srclen = equallocation;
+      full_input_length = equallocation + 1;
+      if (srclen == 0) {
+        return {SUCCESS, full_input_length, 0};
+      }
+      srcend = equal;
+    }
+  }
   char *buffer_start = buffer;
   // Optimization note: if this is almost full, then it is worth our
   // time, otherwise, we should just decode directly.
@@ -131,16 +181,20 @@ compress_decode_base64(char *dst, const chartype *src, size_t srclen,
         return {error_code::INVALID_BASE64_CHARACTER, size_t(src - srcinit),
                 size_t(dst - dstinit)};
       }
-      bufferptr += (val <= 63);
+      bufferptr += (val <= 63 && scalar::base64::is_eight_byte(*src));
       src++;
     }
   }
 
   for (; buffer_start + 64 <= bufferptr; buffer_start += 64) {
-    if (dst >= end_of_safe_64byte_zone) {
-      base64_decode_block_safe(dst, buffer_start);
-    } else {
+    // 8 payload bytes still in the buffer become 6 output bytes, which cover
+    // the 4-byte tail of a wide store. Fewer than that, and the tail can
+    // stick out past the real end.
+    const size_t after = size_t(bufferptr - (buffer_start + 64));
+    if (after >= 8) {
       base64_decode_block(dst, buffer_start);
+    } else {
+      base64_decode_block<true>(dst, buffer_start);
     }
     dst += 48;
   }
@@ -182,7 +236,8 @@ compress_decode_base64(char *dst, const chartype *src, size_t srclen,
           src--;
         }
       } else {
-        while (to_base64[uint8_t(*(src - 1))] >= 64) {
+        while (!scalar::base64::is_eight_byte(*(src - 1)) ||
+               to_base64[uint8_t(*(src - 1))] >= 64) {
           src--;
         }
       }
@@ -221,10 +276,11 @@ compress_decode_base64(char *dst, const chartype *src, size_t srclen,
   if (!ignore_garbage && equalsigns > 0) {
     if ((size_t(dst - dstinit) % 3 == 0) ||
         ((size_t(dst - dstinit) % 3) + 1 + equalsigns != 4)) {
-      return {INVALID_BASE64_CHARACTER, equallocation, size_t(dst - dstinit)};
+      return {INVALID_BASE64_CHARACTER, equallocation, size_t(dst - dstinit),
+              true};
     }
   }
-  return {SUCCESS, srclen, size_t(dst - dstinit)};
+  return {SUCCESS, full_input_length, size_t(dst - dstinit)};
 }
 
 } // namespace base64

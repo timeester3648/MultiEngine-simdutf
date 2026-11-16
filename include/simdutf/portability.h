@@ -6,6 +6,7 @@
 #include <cfloat>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #ifndef _WIN32
   // strcasecmp, strncasecmp
@@ -109,7 +110,7 @@
 #elif defined(__aarch64__) || defined(_M_ARM64) || defined(_M_ARM64EC)
   #define SIMDUTF_IS_ARM64 1
 #elif defined(__PPC64__) || defined(_M_PPC64)
-  #if defined(__VEC__) && defined(__ALTIVEC__)
+  #if defined(__VEC__) && defined(__ALTIVEC__) && defined(__POWER8_VECTOR__)
     #define SIMDUTF_IS_PPC64 1
   #endif
 #elif defined(__s390__)
@@ -157,8 +158,10 @@
         // users should update to GCC 15 or better.
         #define SIMDUTF_IMPLEMENTATION_LASX 0
       #endif
+    #elif defined(__clang__)
+      // LLVM supports runtime dispatch for LASX, see simdutf/lasx/intrinsics.h.
     #else
-      // We are not using GCC, so we assume that we can support runtime dispatch
+      // We are not using GCC or LLVM, so we do not support runtime dispatch
       // for LASX. https://godbolt.org/z/jcMnrjYhs
       #define SIMDUTF_IMPLEMENTATION_LASX 0
     #endif

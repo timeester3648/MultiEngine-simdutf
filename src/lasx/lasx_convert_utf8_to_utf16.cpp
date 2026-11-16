@@ -23,7 +23,7 @@ size_t convert_masked_utf8_to_utf16(const char *input,
   // The obvious first test is ASCII, which actually consumes the full 16.
   if ((utf8_end_of_code_point_mask & 0xFFFF) == 0xFFFF) {
     __m128i zero = __lsx_vldi(0);
-    if simdutf_constexpr (match_system(big_endian)) {
+    if constexpr (match_system(big_endian)) {
       __lsx_vst(__lsx_vilvl_b(zero, in),
                 reinterpret_cast<uint16_t *>(utf16_output), 0);
       __lsx_vst(__lsx_vilvh_b(zero, in),
@@ -45,7 +45,7 @@ size_t convert_masked_utf8_to_utf16(const char *input,
     // UTF-16 code units.
     __m128i composed = convert_utf8_3_byte_to_utf16(in);
     // Byte swap if necessary
-    if simdutf_constexpr (!match_system(big_endian)) {
+    if constexpr (!match_system(big_endian)) {
       composed = lsx_swap_bytes(composed);
     }
 
@@ -56,17 +56,17 @@ size_t convert_masked_utf8_to_utf16(const char *input,
 
   // 2 byte sequences occur in short bursts in languages like Greek and Russian.
   if ((utf8_end_of_code_point_mask & 0xFFFF) == 0xAAAA) {
-    // We want to take 6 2-byte UTF-8 code units and turn them into 6 2-byte
+    // We want to take 8 2-byte UTF-8 code units and turn them into 8 2-byte
     // UTF-16 code units.
     __m128i composed = convert_utf8_2_byte_to_utf16(in);
     // Byte swap if necessary
-    if simdutf_constexpr (!match_system(big_endian)) {
+    if constexpr (!match_system(big_endian)) {
       composed = lsx_swap_bytes(composed);
     }
 
     __lsx_vst(composed, reinterpret_cast<uint16_t *>(utf16_output), 0);
-    utf16_output += 8; // We wrote 6 16-bit characters.
-    return 16;         // We consumed 12 bytes.
+    utf16_output += 8; // We wrote 8 16-bit characters.
+    return 16;         // We consumed 16 bytes.
   }
 
   /// We do not have a fast path available, or the fast path is unimportant, so
@@ -82,7 +82,7 @@ size_t convert_masked_utf8_to_utf16(const char *input,
     // Convert to UTF-16
     __m128i composed = convert_utf8_1_to_2_byte_to_utf16(in, idx);
     // Byte swap if necessary
-    if simdutf_constexpr (!match_system(big_endian)) {
+    if constexpr (!match_system(big_endian)) {
       composed = lsx_swap_bytes(composed);
     }
     // Store
@@ -128,7 +128,7 @@ size_t convert_masked_utf8_to_utf16(const char *input,
     // aaaabbbb bbcccccc
     composed = __lsx_vbitsel_v(highperm, composed, v0fff);
 
-    if simdutf_constexpr (!match_system(big_endian)) {
+    if constexpr (!match_system(big_endian)) {
       composed = lsx_swap_bytes(composed);
     }
 
@@ -191,7 +191,7 @@ size_t convert_masked_utf8_to_utf16(const char *input,
       // 110111CC CCDDDDDD|110110AA BBBBBBCC
       __m128i composed = __lsx_vadd_h(blend, magic_with_low_2);
       // Byte swap if necessary
-      if simdutf_constexpr (!match_system(big_endian)) {
+      if constexpr (!match_system(big_endian)) {
         composed = lsx_swap_bytes(composed);
       }
       __lsx_vst(composed, reinterpret_cast<uint16_t *>(utf16_output), 0);
@@ -265,7 +265,7 @@ size_t convert_masked_utf8_to_utf16(const char *input,
     // 4 byte: 110110AA BBBBBBCC|110111CC CCDDDDDD
     __m128i selected = __lsx_vbitsel_v(composed, surrogates, is_pair);
     // Byte swap if necessary
-    if simdutf_constexpr (!match_system(big_endian)) {
+    if constexpr (!match_system(big_endian)) {
       selected = lsx_swap_bytes(selected);
     }
     // Attempting to shuffle and store would be complex, just scalarize.

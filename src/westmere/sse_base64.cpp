@@ -35,21 +35,24 @@ template <bool base64_url> __m128i lookup_pshufb_improved(const __m128i input) {
   //            63 -> 12
   __m128i result = _mm_subs_epu8(input, _mm_set1_epi8(51));
 
-  // distinguish between ranges 0..25 and 26..51:
+  // distinguish between ranges 0..25 and 26..51 by adding 1 (the
+  // comparison yields -1) to every value greater than 25:
   //         0 .. 25 -> remains 0
-  //        26 .. 51 -> becomes 13
-  const __m128i less = _mm_cmpgt_epi8(_mm_set1_epi8(26), input);
-  result = _mm_or_si128(result, _mm_and_si128(less, _mm_set1_epi8(13)));
+  //        26 .. 51 -> becomes 1
+  //        52 .. 61 -> 2 .. 11
+  //            62 -> 12
+  //            63 -> 13
+  result = _mm_sub_epi8(result, _mm_cmpgt_epi8(input, _mm_set1_epi8(25)));
 
   __m128i shift_LUT;
   if (base64_url) {
-    shift_LUT = _mm_setr_epi8('a' - 26, '0' - 52, '0' - 52, '0' - 52, '0' - 52,
+    shift_LUT = _mm_setr_epi8('A', 'a' - 26, '0' - 52, '0' - 52, '0' - 52,
                               '0' - 52, '0' - 52, '0' - 52, '0' - 52, '0' - 52,
-                              '0' - 52, '-' - 62, '_' - 63, 'A', 0, 0);
+                              '0' - 52, '0' - 52, '-' - 62, '_' - 63, 0, 0);
   } else {
-    shift_LUT = _mm_setr_epi8('a' - 26, '0' - 52, '0' - 52, '0' - 52, '0' - 52,
+    shift_LUT = _mm_setr_epi8('A', 'a' - 26, '0' - 52, '0' - 52, '0' - 52,
                               '0' - 52, '0' - 52, '0' - 52, '0' - 52, '0' - 52,
-                              '0' - 52, '+' - 62, '/' - 63, 'A', 0, 0);
+                              '0' - 52, '0' - 52, '+' - 62, '/' - 63, 0, 0);
   }
 
   // read shift
@@ -60,34 +63,29 @@ template <bool base64_url> __m128i lookup_pshufb_improved(const __m128i input) {
 
 inline __m128i insert_line_feed16(__m128i input, size_t K) {
   static const uint8_t shuffle_masks[16][16] = {
-      {0x80, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
-      {0, 0x80, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
-      {0, 1, 0x80, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
-      {0, 1, 2, 0x80, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
-      {0, 1, 2, 3, 0x80, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
-      {0, 1, 2, 3, 4, 0x80, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
-      {0, 1, 2, 3, 4, 5, 0x80, 6, 7, 8, 9, 10, 11, 12, 13, 14},
-      {0, 1, 2, 3, 4, 5, 6, 0x80, 7, 8, 9, 10, 11, 12, 13, 14},
-      {0, 1, 2, 3, 4, 5, 6, 7, 0x80, 8, 9, 10, 11, 12, 13, 14},
-      {0, 1, 2, 3, 4, 5, 6, 7, 8, 0x80, 9, 10, 11, 12, 13, 14},
-      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0x80, 10, 11, 12, 13, 14},
-      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0x80, 11, 12, 13, 14},
-      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0x80, 12, 13, 14},
-      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 0x80, 13, 14},
-      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 0x80, 14},
-      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 0x80}};
-  // Prepare a vector with '\n' (0x0A)
-  __m128i line_feed_vector = _mm_set1_epi8('\n');
+      {15, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 15, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 15, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 15, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 15, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 15, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 15, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 15, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 15, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 15, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 15, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}};
+  input = _mm_insert_epi8(input, '\n', 15);
 
   // Load the precomputed shuffle mask for K (index K-1)
   __m128i mask = _mm_loadu_si128((__m128i *)shuffle_masks[K]);
-  __m128i lf_pos = _mm_cmpeq_epi8(mask, _mm_set1_epi8(static_cast<char>(0x80)));
 
   // Perform the shuffle to reposition the K bytes
-  __m128i shuffled = _mm_shuffle_epi8(input, mask);
-
-  // Blend with line_feed_vector to insert '\n' at the appropriate positions
-  __m128i result = _mm_blendv_epi8(shuffled, line_feed_vector, lf_pos);
+  __m128i result = _mm_shuffle_epi8(input, mask);
 
   return result;
 }
@@ -365,6 +363,9 @@ static simdutf_really_inline void compress(__m128i data, uint16_t mask,
   _mm_storeu_si128(reinterpret_cast<__m128i *>(output), answer);
 }
 
+// exact: write 12 bytes. Otherwise write 16 and let the next lane cover the
+// extra 4. Only the last lane of a block passes true.
+template <bool exact = false>
 static simdutf_really_inline void base64_decode(char *out, __m128i str) {
   // credit: aqrit
 
@@ -374,32 +375,26 @@ static simdutf_really_inline void base64_decode(char *out, __m128i str) {
   const __m128i t0 = _mm_maddubs_epi16(str, _mm_set1_epi32(0x01400140));
   const __m128i t1 = _mm_madd_epi16(t0, _mm_set1_epi32(0x00011000));
   const __m128i t2 = _mm_shuffle_epi8(t1, pack_shuffle);
-  // Store the output:
-  // this writes 16 bytes, but we only need 12.
-  _mm_storeu_si128((__m128i *)out, t2);
+  if constexpr (exact) {
+    _mm_storel_epi64((__m128i *)out, t2);
+    const int32_t last = _mm_extract_epi32(t2, 2);
+    std::memcpy(out + 8, &last, sizeof(last));
+  } else {
+    // this writes 16 bytes, but we only need 12.
+    _mm_storeu_si128((__m128i *)out, t2);
+  }
 }
 
 // decode 64 bytes and output 48 bytes
+template <bool exact = false>
 static inline void base64_decode_block(char *out, const char *src) {
   base64_decode(out, _mm_loadu_si128(reinterpret_cast<const __m128i *>(src)));
   base64_decode(out + 12,
                 _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + 16)));
   base64_decode(out + 24,
                 _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + 32)));
-  base64_decode(out + 36,
-                _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + 48)));
-}
-
-static inline void base64_decode_block_safe(char *out, const char *src) {
-  base64_decode(out, _mm_loadu_si128(reinterpret_cast<const __m128i *>(src)));
-  base64_decode(out + 12,
-                _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + 16)));
-  base64_decode(out + 24,
-                _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + 32)));
-  char buffer[16];
-  base64_decode(buffer,
-                _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + 48)));
-  std::memcpy(out + 36, buffer, 12);
+  base64_decode<exact>(
+      out + 36, _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + 48)));
 }
 
 // --- decoding - base64 class --------------------------------
@@ -443,6 +438,19 @@ public:
   }
 
 public:
+  simdutf_really_inline uint64_t equal_sign_mask() const {
+    const __m128i equal = _mm_set1_epi8('=');
+    const uint64_t m0 =
+        uint16_t(_mm_movemask_epi8(_mm_cmpeq_epi8(chunks[0], equal)));
+    const uint64_t m1 =
+        uint16_t(_mm_movemask_epi8(_mm_cmpeq_epi8(chunks[1], equal)));
+    const uint64_t m2 =
+        uint16_t(_mm_movemask_epi8(_mm_cmpeq_epi8(chunks[2], equal)));
+    const uint64_t m3 =
+        uint16_t(_mm_movemask_epi8(_mm_cmpeq_epi8(chunks[3], equal)));
+    return m0 | (m1 << 16) | (m2 << 32) | (m3 << 48);
+  }
+
   simdutf_really_inline void copy_block(char *output) {
     _mm_storeu_si128(reinterpret_cast<__m128i *>(output), chunks[0]);
     _mm_storeu_si128(reinterpret_cast<__m128i *>(output + 16), chunks[1]);
@@ -653,20 +661,115 @@ private:
   }
 
 public:
+  template <bool exact = false>
   simdutf_really_inline void base64_decode_block(char *out) {
     base64_decode(out, chunks[0]);
     base64_decode(out + 12, chunks[1]);
     base64_decode(out + 24, chunks[2]);
-    base64_decode(out + 36, chunks[3]);
-  }
-
-public:
-  simdutf_really_inline void base64_decode_block_safe(char *out) {
-    base64_decode(out, chunks[0]);
-    base64_decode(out + 12, chunks[1]);
-    base64_decode(out + 24, chunks[2]);
-    char buffer[16];
-    base64_decode(buffer, chunks[3]);
-    std::memcpy(out + 36, buffer, 12);
+    base64_decode<exact>(out + 36, chunks[3]);
   }
 };
+
+// One bit per byte of the 16 bytes at p: set if the byte is > 0x20 (signed,
+// like the scalar code). spaces holds 0x20 in every byte.
+simdutf_really_inline uint16_t sse_above_space_mask(const char *p,
+                                                    __m128i spaces) {
+  __m128i data = _mm_loadu_si128(reinterpret_cast<const __m128i *>(p));
+  return static_cast<uint16_t>(_mm_movemask_epi8(_mm_cmpgt_epi8(data, spaces)));
+}
+
+simdutf_warn_unused size_t sse_binary_length_from_base64(const char *input,
+                                                         size_t length) {
+  // Inputs this long count eight blocks per step in the vector domain.
+  constexpr size_t vector_count_threshold = 128;
+  // Inputs this long are first aligned to 16 bytes. An unaligned 16-byte
+  // load straddles two cache lines every fourth block; that costs nothing
+  // measurable while the data is in L1 or L2, but about 5% once it comes
+  // from further out. The head costs one masked block, so the threshold
+  // only needs to keep it off short inputs; it matches haswell.
+  constexpr size_t align_threshold = 1024;
+
+  size_t count = 0;
+  const char *ptr = input;
+  const char *end = input + length;
+
+  const __m128i spaces = _mm_set1_epi8(0x20);
+  // The hint keeps the short-input path straight-line; it costs the long
+  // path one taken jump per call.
+  if (simdutf_unlikely(length >= vector_count_threshold)) {
+    if (length >= align_threshold) {
+      // Bytes up to the next 16-byte boundary, 0..15.
+      const size_t head = (16 - (reinterpret_cast<uintptr_t>(ptr) & 15)) & 15;
+      if (head != 0) {
+        count += count_ones(sse_above_space_mask(ptr, spaces) &
+                            ((uint32_t(1) << head) - 1));
+        ptr += head;
+      }
+    }
+    // Count eight blocks per step; at least 128 bytes remain, so the loop
+    // runs at least once. Each compare yields 0 or -1 per byte; the sum of
+    // eight is at least -8, so negating it gives per-byte counts of 0..8
+    // that psadbw adds into 64-bit lanes. This replaces a pmovmskb, a popcnt
+    // and an add per block.
+    const __m128i zero = _mm_setzero_si128();
+    __m128i sums = zero;
+    do {
+      const __m128i *p = reinterpret_cast<const __m128i *>(ptr);
+      __m128i neg = _mm_cmpgt_epi8(_mm_loadu_si128(p), spaces);
+      for (size_t i = 1; i < 8; i++) {
+        neg = _mm_add_epi8(neg, _mm_cmpgt_epi8(_mm_loadu_si128(p + i), spaces));
+      }
+      sums = _mm_add_epi64(sums, _mm_sad_epu8(_mm_sub_epi8(zero, neg), zero));
+      ptr += 128;
+    } while (size_t(end - ptr) >= 128);
+    count +=
+        size_t(_mm_extract_epi64(sums, 0)) + size_t(_mm_extract_epi64(sums, 1));
+  }
+
+  // Whole blocks left over: at most seven after the loop above, or up to
+  // seven for a short input. Four of them are counted together, with one
+  // popcount, as the generic code does.
+  if (size_t(end - ptr) >= 64) {
+    const uint64_t mask =
+        uint64_t(sse_above_space_mask(ptr, spaces)) |
+        (uint64_t(sse_above_space_mask(ptr + 16, spaces)) << 16) |
+        (uint64_t(sse_above_space_mask(ptr + 32, spaces)) << 32) |
+        (uint64_t(sse_above_space_mask(ptr + 48, spaces)) << 48);
+    count += count_ones(mask);
+    ptr += 64;
+  }
+  // When nothing is left (for example, for an input of exactly 64 bytes),
+  // skip the block loop and the tail checks.
+  if (ptr != end) {
+    while (size_t(end - ptr) >= 16) {
+      count += count_ones(sse_above_space_mask(ptr, spaces));
+      ptr += 16;
+    }
+
+    if (ptr != end) {
+      if (length >= 16) {
+        // Fewer than 16 bytes remain: count them in the last 16 bytes of the
+        // input, which end at the same place.
+        const size_t rest = size_t(end - ptr);
+        count += count_ones(uint32_t(sse_above_space_mask(end - 16, spaces)) >>
+                            (16 - rest));
+      } else {
+        do {
+          count += (*ptr > 0x20) ? 1 : 0;
+        } while (++ptr != end);
+      }
+    }
+  }
+
+  size_t padding = 0;
+  size_t pos = length;
+  while (pos > 0 && padding < 2) {
+    char c = input[--pos];
+    if (c == '=') {
+      padding++;
+    } else if (c > ' ') {
+      break;
+    }
+  }
+  return ((count - padding) * 3) / 4;
+}

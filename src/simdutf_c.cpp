@@ -8,6 +8,57 @@ static simdutf_result to_c_result(const simdutf::result &r) {
   return out;
 }
 
+static simdutf_utf8_result to_c_utf8_result(const simdutf::utf8_result &r) {
+  simdutf_utf8_result out;
+  out.error = static_cast<simdutf_error_code>(r.error);
+  out.input_count = r.input_count;
+  out.continuation_count = r.continuation_count;
+  out.four_byte_count = r.four_byte_count;
+  return out;
+}
+
+static simdutf_full_result to_c_full_result(const simdutf::full_result &r) {
+  simdutf_full_result out;
+  out.error = static_cast<simdutf_error_code>(r.error);
+  out.input_count = r.input_count;
+  out.output_count = r.output_count;
+  return out;
+}
+
+static_assert(simdutf::utf8_to_utf16_result::max_errors ==
+                  SIMDUTF_UTF8_TO_UTF16_MAX_ERRORS,
+              "C and C++ UTF-8 to UTF-16 error caps differ");
+
+static simdutf_utf8_to_utf16_result
+to_c_utf8_to_utf16_result(const simdutf::utf8_to_utf16_result &r) {
+  simdutf_utf8_to_utf16_result out;
+  out.error = static_cast<simdutf_error_code>(r.error);
+  out.count = r.count;
+  out.error_count = r.error_count;
+  out.more_errors = r.more_errors;
+  for (size_t i = 0; i < SIMDUTF_UTF8_TO_UTF16_MAX_ERRORS; i++) {
+    out.error_offset[i] = r.error_offset[i];
+  }
+  return out;
+}
+
+static simdutf::utf8_to_utf16_result
+from_c_utf8_to_utf16_result(const simdutf_utf8_to_utf16_result *r) {
+  simdutf::utf8_to_utf16_result out;
+  out.error = static_cast<simdutf::error_code>(r->error);
+  out.count = r->count;
+  out.error_count = r->error_count;
+  out.more_errors = r->more_errors;
+  if (out.error_count > simdutf::utf8_to_utf16_result::max_errors) {
+    out.error_count = simdutf::utf8_to_utf16_result::max_errors;
+    out.more_errors = true;
+  }
+  for (size_t i = 0; i < out.error_count; i++) {
+    out.error_offset[i] = r->error_offset[i];
+  }
+  return out;
+}
+
 /* The C wrapper depends on the library features. Only expose the C API
    when all relevant feature is enabled. This helps the
    single-header generator to omit the C wrapper when features are
@@ -23,6 +74,19 @@ bool simdutf_validate_utf8(const char *buf, size_t len) {
 
 simdutf_result simdutf_validate_utf8_with_errors(const char *buf, size_t len) {
   return to_c_result(simdutf::validate_utf8_with_errors(buf, len));
+}
+
+simdutf_utf8_result simdutf_validate_utf8_with_counts(const char *buf,
+                                                      size_t len) {
+  return to_c_utf8_result(simdutf::validate_utf8_with_counts(buf, len));
+}
+
+size_t simdutf_utf8_result_utf16_length(simdutf_utf8_result r) {
+  return r.input_count - r.continuation_count + r.four_byte_count;
+}
+
+size_t simdutf_utf8_result_utf32_length(simdutf_utf8_result r) {
+  return r.input_count - r.continuation_count;
 }
 
 simdutf_encoding_type simdutf_autodetect_encoding(const char *input,
@@ -123,6 +187,12 @@ size_t simdutf_latin1_length_from_utf32(size_t length) {
 size_t simdutf_utf16_length_from_utf8(const char *input, size_t length) {
   return simdutf::utf16_length_from_utf8(input, length);
 }
+simdutf_utf8_to_utf16_result
+simdutf_utf16_length_from_utf8_with_replacement(const char *input,
+                                                size_t length) {
+  return to_c_utf8_to_utf16_result(
+      simdutf::utf16_length_from_utf8_with_replacement(input, length));
+}
 size_t simdutf_utf32_length_from_utf8(const char *input, size_t length) {
   return simdutf::utf32_length_from_utf8(input, length);
 }
@@ -167,6 +237,11 @@ size_t simdutf_convert_latin1_to_utf8_safe(const char *input, size_t length,
                                            char *output, size_t utf8_len) {
   return simdutf::convert_latin1_to_utf8_safe(input, length, output, utf8_len);
 }
+simdutf_full_result simdutf_convert_latin1_to_utf8_safe_with_details(
+    const char *input, size_t length, char *output, size_t utf8_len) {
+  return to_c_full_result(simdutf::convert_latin1_to_utf8_safe_with_details(
+      input, length, output, utf8_len));
+}
 size_t simdutf_convert_latin1_to_utf16le(const char *input, size_t length,
                                          char16_t *output) {
   return simdutf::convert_latin1_to_utf16le(input, length, output);
@@ -195,6 +270,47 @@ size_t simdutf_convert_utf8_to_utf16le(const char *input, size_t length,
 size_t simdutf_convert_utf8_to_utf16(const char *input, size_t length,
                                      char16_t *output) {
   return simdutf::convert_utf8_to_utf16(input, length, output);
+}
+size_t simdutf_convert_utf8_to_utf16_with_replacement(const char *input,
+                                                      size_t length,
+                                                      char16_t *output) {
+  return simdutf::convert_utf8_to_utf16_with_replacement(input, length, output);
+}
+size_t simdutf_convert_utf8_to_utf16le_with_replacement(const char *input,
+                                                        size_t length,
+                                                        char16_t *output) {
+  return simdutf::convert_utf8_to_utf16le_with_replacement(input, length,
+                                                           output);
+}
+size_t simdutf_convert_utf8_to_utf16be_with_replacement(const char *input,
+                                                        size_t length,
+                                                        char16_t *output) {
+  return simdutf::convert_utf8_to_utf16be_with_replacement(input, length,
+                                                           output);
+}
+size_t simdutf_convert_utf8_to_utf16_with_replacement_with_result(
+    const char *input, size_t length, char16_t *output,
+    const simdutf_utf8_to_utf16_result *locations) {
+  const simdutf::utf8_to_utf16_result plan =
+      from_c_utf8_to_utf16_result(locations);
+  return simdutf::convert_utf8_to_utf16_with_replacement(input, length, output,
+                                                         plan);
+}
+size_t simdutf_convert_utf8_to_utf16le_with_replacement_with_result(
+    const char *input, size_t length, char16_t *output,
+    const simdutf_utf8_to_utf16_result *locations) {
+  const simdutf::utf8_to_utf16_result plan =
+      from_c_utf8_to_utf16_result(locations);
+  return simdutf::convert_utf8_to_utf16le_with_replacement(input, length,
+                                                           output, plan);
+}
+size_t simdutf_convert_utf8_to_utf16be_with_replacement_with_result(
+    const char *input, size_t length, char16_t *output,
+    const simdutf_utf8_to_utf16_result *locations) {
+  const simdutf::utf8_to_utf16_result plan =
+      from_c_utf8_to_utf16_result(locations);
+  return simdutf::convert_utf8_to_utf16be_with_replacement(input, length,
+                                                           output, plan);
 }
 size_t simdutf_convert_utf8_to_utf16be(const char *input, size_t length,
                                        char16_t *output) {
@@ -262,6 +378,11 @@ size_t simdutf_convert_utf16_to_utf8_safe(const char16_t *input, size_t length,
                                           char *output, size_t utf8_len) {
   return simdutf::convert_utf16_to_utf8_safe(input, length, output, utf8_len);
 }
+simdutf_full_result simdutf_convert_utf16_to_utf8_safe_with_details(
+    const char16_t *input, size_t length, char *output, size_t utf8_len) {
+  return to_c_full_result(simdutf::convert_utf16_to_utf8_safe_with_details(
+      input, length, output, utf8_len));
+}
 size_t simdutf_convert_utf16_to_latin1(const char16_t *input, size_t length,
                                        char *output) {
   return simdutf::convert_utf16_to_latin1(input, length, output);
@@ -319,6 +440,29 @@ size_t simdutf_convert_utf16le_to_utf8(const char16_t *input, size_t length,
 size_t simdutf_convert_utf16be_to_utf8(const char16_t *input, size_t length,
                                        char *output) {
   return simdutf::convert_utf16be_to_utf8(input, length, output);
+}
+
+size_t simdutf_convert_utf16_to_utf8_with_replacement(const char16_t *input,
+                                                      size_t length,
+                                                      char *output) {
+  return simdutf::convert_utf16_to_utf8_with_replacement(input, length, output);
+}
+simdutf_full_result simdutf_convert_utf16_to_utf8_with_replacement_safe(
+    const char16_t *input, size_t length, char *output, size_t utf8_len) {
+  return to_c_full_result(simdutf::convert_utf16_to_utf8_with_replacement_safe(
+      input, length, output, utf8_len));
+}
+size_t simdutf_convert_utf16le_to_utf8_with_replacement(const char16_t *input,
+                                                        size_t length,
+                                                        char *output) {
+  return simdutf::convert_utf16le_to_utf8_with_replacement(input, length,
+                                                           output);
+}
+size_t simdutf_convert_utf16be_to_utf8_with_replacement(const char16_t *input,
+                                                        size_t length,
+                                                        char *output) {
+  return simdutf::convert_utf16be_to_utf8_with_replacement(input, length,
+                                                           output);
 }
 
 size_t simdutf_convert_valid_utf16_to_utf8(const char16_t *input, size_t length,
@@ -517,6 +661,33 @@ simdutf_result simdutf_base64_to_binary_safe_utf16(
   if (outlen)
     *outlen = local_out;
   return to_c_result(r);
+}
+
+simdutf_full_result simdutf_base64_to_binary_details(
+    const char *input, size_t length, char *output,
+    simdutf_base64_options options,
+    simdutf_last_chunk_handling_options last_chunk_options) {
+  return to_c_full_result(simdutf::base64_to_binary_details(
+      input, length, output, static_cast<simdutf::base64_options>(options),
+      static_cast<simdutf::last_chunk_handling_options>(last_chunk_options)));
+}
+simdutf_full_result simdutf_base64_to_binary_details_utf16(
+    const char16_t *input, size_t length, char *output,
+    simdutf_base64_options options,
+    simdutf_last_chunk_handling_options last_chunk_options) {
+  return to_c_full_result(simdutf::base64_to_binary_details(
+      input, length, output, static_cast<simdutf::base64_options>(options),
+      static_cast<simdutf::last_chunk_handling_options>(last_chunk_options)));
+}
+
+bool simdutf_base64_valid(char input, simdutf_base64_options options) {
+  return simdutf::base64_valid(input,
+                               static_cast<simdutf::base64_options>(options));
+}
+bool simdutf_base64_valid_utf16(char16_t input,
+                                simdutf_base64_options options) {
+  return simdutf::base64_valid(input,
+                               static_cast<simdutf::base64_options>(options));
 }
 
 } // extern "C"

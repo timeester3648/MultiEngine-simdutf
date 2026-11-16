@@ -1,9 +1,9 @@
-cmake_minimum_required(VERSION 3.15)
+cmake_minimum_required(VERSION 3.18)
 
 project(simdutf
   DESCRIPTION "Fast Unicode validation, transcoding and processing"
   LANGUAGES C CXX
-  VERSION 8.2.0
+  VERSION 9.4.0
 )
 
 include (TestBigEndian)
@@ -23,10 +23,11 @@ include(GNUInstallDirs)
 include(CTest)
 include(cmake/simdutf-flags.cmake)
 
-set(SIMDUTF_LIB_VERSION "33.0.0" CACHE STRING "simdutf library version")
-set(SIMDUTF_LIB_SOVERSION "33" CACHE STRING "simdutf library soversion")
+set(SIMDUTF_LIB_VERSION "38.0.0" CACHE STRING "simdutf library version")
+set(SIMDUTF_LIB_SOVERSION "38" CACHE STRING "simdutf library soversion")
 option(SIMDUTF_TESTS "Whether the tests are included as part of the CMake Build." ON)
 option(SIMDUTF_FAST_TESTS "Whether parameters to the tests are adapted to make them execute quicker" OFF)
+option(SIMDUTF_TOOL_TESTS "Whether to tests the tools" OFF)
 option(SIMDUTF_ATOMIC_BASE64_TESTS "Whether to test the atomic base64 functions. (OFF by default)" OFF)
 option(SIMDUTF_BENCHMARKS "Whether the benchmarks are included as part of the CMake Build." OFF)
 option(SIMDUTF_TOOLS "Whether the tools are included as part of the CMake build. Requires C++17 or better." ON)
@@ -35,23 +36,32 @@ option(SIMDUTF_FUZZERS "Whether to build the fuzzers." OFF)
 option(SIMDUTF_COVERAGE "Enable code coverage collection during tests (only GCC and Clang)." OFF)
 option(SIMDUTF_INTERNAL_TESTS "Whether to test also internal procedures. Useful mostly for developers, not users." OFF)
 option(SIMDUTF_LOGGING "Whether to enable logging (this should never be used in binary releases)." OFF)
+option(SIMDUTF_USE_STATIC_INITIALIZATION "Whether to use translation-unit-scope static variables for implementation singletons (faster, but unsafe before main() when used in a library)." OFF)
 option(FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION "Whether to enable unsafe fuzzing mode." OFF)
 
-if(SIMDUTF_LOGGING AND DEFINED CMAKE_CXX_STANDARD AND CMAKE_CXX_STANDARD LESS 17)
-    set(CMAKE_CXX_STANDARD 17)
-    set(CMAKE_CXX_STANDARD_REQUIRED ON)
-endif()
 set(SIMDUTF_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_subdirectory(src)
 add_subdirectory(singleheader)
 
+set(SIMDUTF_BUILD_BENCHMARKS OFF)
+if (SIMDUTF_BENCHMARKS)
+  if((CMAKE_CXX_COMPILER_ID MATCHES GNU) AND (CMAKE_CXX_COMPILER_VERSION VERSION_LESS "8.0"))
+    message(STATUS "The benchmark tool requires GCC 8.0 or better.")
+  else()
+    set(SIMDUTF_BUILD_BENCHMARKS ON)
+  endif()
+endif()
+
 if (SIMDUTF_TESTS)
   message(STATUS "The tests are enabled.")
   add_subdirectory(tests)
-else(SIMDUTF_TESTS)
+elseif (SIMDUTF_BUILD_BENCHMARKS)
+  message(STATUS "The tests are disabled, building only the test helpers needed by the benchmarks.")
+  add_subdirectory(tests)
+else()
   message(STATUS "The tests are disabled.")
-endif(SIMDUTF_TESTS)
+endif()
 
 
 if (SIMDUTF_TOOLS)
@@ -63,16 +73,10 @@ if (SIMDUTF_TOOLS)
 endif()
 
 
-if (SIMDUTF_BENCHMARKS)
-  if(NOT SIMDUTF_TESTS)
-    message(STATUS "You have enabled the benchmarks, but not the tests. We don't allow running the benchmarks without the tests.")
-  elseif((CMAKE_CXX_COMPILER_ID MATCHES GNU) AND (CMAKE_CXX_COMPILER_VERSION VERSION_LESS "8.0"))
-    message(STATUS "The benchmark tool requires GCC 8.0 or better.")
-  else()
-    message(STATUS "The benchmarks can be disabled by setting SIMDUTF_BENCHMARKS, e.g., -D SIMDUTF_BENCHMARKS=OFF.")
-    add_subdirectory(benchmarks)
-  endif()
-else()
+if (SIMDUTF_BUILD_BENCHMARKS)
+  message(STATUS "The benchmarks can be disabled by setting SIMDUTF_BENCHMARKS, e.g., -D SIMDUTF_BENCHMARKS=OFF.")
+  add_subdirectory(benchmarks)
+elseif (NOT SIMDUTF_BENCHMARKS)
   message(STATUS "The benchmarks can be enabled by setting SIMDUTF_BENCHMARKS, e.g., -D SIMDUTF_BENCHMARKS=ON.")
 endif()
 

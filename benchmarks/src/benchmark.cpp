@@ -3,6 +3,7 @@
 
 #include <cassert>
 #include <array>
+#include <cstdlib>
 #include <iostream>
 #include <chrono>
 #include <thread>
@@ -79,7 +80,7 @@ void Benchmark::register_function(std::string name, Fn function,
   if (name.find('+') == std::string::npos) {
     // adding simdutf benchmark, populate for all known architectures
     for (const auto &impl : simdutf::get_available_implementations()) {
-      const auto full_name = name + '+' + impl->name();
+      const auto full_name = name + '+' + std::string(impl->name());
       benchmarks.insert({full_name, std::make_pair(function, set)});
     }
   } else {
@@ -128,6 +129,9 @@ Benchmark::Benchmark(std::vector<input::Testcase> &&testcases)
                     simdutf::encoding_type::UTF8);
   register_function("validate_utf8_with_errors",
                     &Benchmark::run_validate_utf8_with_errors,
+                    simdutf::encoding_type::UTF8);
+  register_function("validate_utf8_with_counts",
+                    &Benchmark::run_validate_utf8_with_counts,
                     simdutf::encoding_type::UTF8);
   register_function("validate_utf16le", &Benchmark::run_validate_utf16le,
                     simdutf::encoding_type::UTF16_LE);
@@ -237,6 +241,9 @@ Benchmark::Benchmark(std::vector<input::Testcase> &&testcases)
                     simdutf::encoding_type::UTF16_LE);
   register_function("convert_utf16le_to_utf8_with_errors",
                     &Benchmark::run_convert_utf16le_to_utf8_with_errors,
+                    simdutf::encoding_type::UTF16_LE);
+  register_function("convert_utf16le_to_utf8_with_replacement",
+                    &Benchmark::run_convert_utf16le_to_utf8_with_replacement,
                     simdutf::encoding_type::UTF16_LE);
   register_function(
       "convert_utf16le_to_utf8_with_dynamic_allocation",
@@ -631,6 +638,26 @@ void Benchmark::run_validate_utf8_with_errors(
 
   auto proc = [&implementation, data, size, &sink]() {
     result res = implementation.validate_utf8_with_errors(data, size);
+    sink = !(res.error);
+  };
+
+  count_events(proc, iterations); // warming up!
+  const auto result = count_events(proc, iterations);
+  if ((sink == false) && (iterations > 0)) {
+    std::cerr << "The input was declared invalid.\n";
+  }
+  size_t char_count = get_active_implementation()->count_utf8(data, size);
+  print_summary(result, size, char_count);
+}
+
+void Benchmark::run_validate_utf8_with_counts(
+    const simdutf::implementation &implementation, size_t iterations) {
+  const char *data = reinterpret_cast<const char *>(input_data.data());
+  const size_t size = input_data.size();
+  volatile bool sink{false};
+
+  auto proc = [&implementation, data, size, &sink]() {
+    utf8_result res = implementation.validate_utf8_with_counts(data, size);
     sink = !(res.error);
   };
 
@@ -2801,6 +2828,40 @@ void Benchmark::run_convert_utf16le_to_utf8(
   auto proc = [&implementation, data, size, &output_buffer, &sink]() {
     sink =
         implementation.convert_utf16le_to_utf8(data, size, output_buffer.get());
+  };
+  count_events(proc, iterations); // warming up!
+  const auto result = count_events(proc, iterations);
+  if ((sink == 0) && (size != 0) && (iterations > 0)) {
+    std::cerr << "The output is zero which might indicate an error.\n";
+  }
+  size_t char_count = get_active_implementation()->count_utf16le(data, size);
+  print_summary(result, input_data.size(), char_count);
+}
+
+void Benchmark::run_convert_utf16le_to_utf8_with_replacement(
+    const simdutf::implementation &implementation, size_t iterations) {
+  const simdutf::encoding_type bom =
+      BOM::check_bom(input_data.data(), input_data.size());
+  const char16_t *data = reinterpret_cast<const char16_t *>(
+      input_data.data() + BOM::bom_byte_size(bom));
+  size_t size = input_data.size() - BOM::bom_byte_size(bom);
+  if (size % 2 != 0) {
+    printf("# The input size is not divisible by two (it is %zu + %zu for BOM)",
+           size_t(input_data.size()), size_t(BOM::bom_byte_size(bom)));
+    printf(" Running function on truncated input.\n");
+  }
+
+  size /= 2;
+
+  // Unpaired surrogates are replaced by U+FFFD (3 bytes); as with the plain
+  // converter, four bytes per 16-bit word is a safe over-allocation.
+  std::unique_ptr<char[]> output_buffer{new char[size * 4]};
+
+  volatile size_t sink{0};
+
+  auto proc = [&implementation, data, size, &output_buffer, &sink]() {
+    sink = implementation.convert_utf16le_to_utf8_with_replacement(
+        data, size, output_buffer.get());
   };
   count_events(proc, iterations); // warming up!
   const auto result = count_events(proc, iterations);

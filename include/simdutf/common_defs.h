@@ -7,6 +7,7 @@
 // Sometimes logging is useful, but we want it disabled by default
 // and free of any logging code in release builds.
 #ifdef SIMDUTF_LOGGING
+  #include <cstdlib>
   #include <iostream>
   #define simdutf_log(msg)                                                     \
     std::cout << "[" << __FUNCTION__ << "]: " << msg << std::endl              \
@@ -24,6 +25,10 @@
   #define simdutf_log_assert(cond, msg)
 #endif
 
+#if SIMDUTF_CPLUSPLUS17
+  #define simdutf_unused [[maybe_unused]]
+#endif // SIMDUTF_CPLUSPLUS17
+
 #if defined(SIMDUTF_REGULAR_VISUAL_STUDIO)
   #define SIMDUTF_DEPRECATED __declspec(deprecated)
 
@@ -31,7 +36,9 @@
   #define simdutf_always_inline __forceinline // always inline, no matter what
   #define simdutf_never_inline __declspec(noinline)
 
-  #define simdutf_unused
+  #ifndef simdutf_unused
+    #define simdutf_unused
+  #endif // simdutf_unused
   #define simdutf_warn_unused
 
   #ifndef simdutf_likely
@@ -74,8 +81,9 @@
     inline __attribute__((always_inline)) // always inline, no matter what
   #define SIMDUTF_DEPRECATED __attribute__((deprecated))
   #define simdutf_never_inline inline __attribute__((noinline))
-
-  #define simdutf_unused __attribute__((unused))
+  #ifndef simdutf_unused
+    #define simdutf_unused __attribute__((unused))
+  #endif // simdutf_unused
   #define simdutf_warn_unused __attribute__((warn_unused_result))
 
   #ifndef simdutf_likely
@@ -122,13 +130,6 @@
   // clang-format on
 
 #endif // MSC_VER
-
-// Conditional constexpr macro: expands to constexpr for C++17+, empty otherwise
-#if SIMDUTF_CPLUSPLUS17
-  #define simdutf_constexpr constexpr
-#else
-  #define simdutf_constexpr
-#endif
 
 // Will evaluate to constexpr in C++23 or later. This makes it possible to mark
 // functions constexpr if the "if consteval" feature is available to use.

@@ -261,10 +261,13 @@ static simdutf_really_inline vector_u8 decoding_pack(vector_u8 input) {
 
   const auto tmp = as_vector_u8(t4);
 
+  // The last four lanes are padding: pull them from a zero vector rather
+  // than from tmp, as the 16-byte store in base64_decode would otherwise
+  // write garbage past the 12 bytes we produce.
   const auto shuffle =
-      vector_u8(1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 15, 0, 0, 0, 0);
+      vector_u8(1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 15, 16, 16, 16, 16);
 
-  const auto t = shuffle.lookup_16(tmp);
+  const auto t = shuffle.lookup_32(tmp, vector_u8::zero());
 
   return t;
 #else
@@ -285,36 +288,38 @@ static simdutf_really_inline vector_u8 decoding_pack(vector_u8 input) {
 
   const auto tmp = as_vector_u8(t4);
 
+  // The last four lanes are padding: pull them from a zero vector rather
+  // than from tmp, as the 16-byte store in base64_decode would otherwise
+  // write garbage past the 12 bytes we produce.
   const auto shuffle =
-      vector_u8(2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12, 0, 0, 0, 0);
+      vector_u8(2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12, 16, 16, 16, 16);
 
-  const auto t = shuffle.lookup_16(tmp);
+  const auto t = shuffle.lookup_32(tmp, vector_u8::zero());
 
   return t;
 #endif // SIMDUTF_IS_BIG_ENDIAN
 }
+// exact: store 12 bytes. Otherwise store 16 and let the next lane cover the
+// extra 4. Only the last lane of a block passes true.
+template <bool exact = false>
 static simdutf_really_inline void base64_decode(char *out, vector_u8 input) {
   const auto expanded = decoding_pack(input);
-  expanded.store(out);
+  if constexpr (exact) {
+    alignas(16) char tmp[16];
+    expanded.store(tmp);
+    std::memcpy(out, tmp, 12);
+  } else {
+    expanded.store(out);
+  }
 }
 
+template <bool exact = false>
 static simdutf_really_inline void base64_decode_block(char *out,
                                                       const char *src) {
   base64_decode(out + 12 * 0, vector_u8::load(src + 0 * 16));
   base64_decode(out + 12 * 1, vector_u8::load(src + 1 * 16));
   base64_decode(out + 12 * 2, vector_u8::load(src + 2 * 16));
-  base64_decode(out + 12 * 3, vector_u8::load(src + 3 * 16));
-}
-
-static simdutf_really_inline void base64_decode_block_safe(char *out,
-                                                           const char *src) {
-  base64_decode(out + 12 * 0, vector_u8::load(src + 0 * 16));
-  base64_decode(out + 12 * 1, vector_u8::load(src + 1 * 16));
-  base64_decode(out + 12 * 2, vector_u8::load(src + 2 * 16));
-
-  char buffer[16];
-  base64_decode(buffer, vector_u8::load(src + 3 * 16));
-  std::memcpy(out + 36, buffer, 12);
+  base64_decode<exact>(out + 12 * 3, vector_u8::load(src + 3 * 16));
 }
 
 // ---base64 decoding::block64 class --------------------------
@@ -446,6 +451,15 @@ public:
     return m0 | (m1 << 16) | (m2 << 32) | (m3 << 48);
   }
 
+  simdutf_really_inline uint64_t equal_sign_mask() const {
+    const vector_u8 equal('=');
+    const uint64_t m0 = (b.chunks[0] == equal).to_bitmask();
+    const uint64_t m1 = (b.chunks[1] == equal).to_bitmask();
+    const uint64_t m2 = (b.chunks[2] == equal).to_bitmask();
+    const uint64_t m3 = (b.chunks[3] == equal).to_bitmask();
+    return m0 | (m1 << 16) | (m2 << 32) | (m3 << 48);
+  }
+
   simdutf_really_inline void copy_block(char *output) {
     b.store(reinterpret_cast<uint8_t *>(output));
   }
@@ -462,19 +476,11 @@ public:
     return count_ones(nmask);
   }
 
+  template <bool exact = false>
   simdutf_really_inline void base64_decode_block(char *out) {
     base64_decode(out + 12 * 0, b.chunks[0]);
     base64_decode(out + 12 * 1, b.chunks[1]);
     base64_decode(out + 12 * 2, b.chunks[2]);
-    base64_decode(out + 12 * 3, b.chunks[3]);
-  }
-
-  simdutf_really_inline void base64_decode_block_safe(char *out) {
-    base64_decode(out + 12 * 0, b.chunks[0]);
-    base64_decode(out + 12 * 1, b.chunks[1]);
-    base64_decode(out + 12 * 2, b.chunks[2]);
-    char buffer[16];
-    base64_decode(buffer, b.chunks[3]);
-    std::memcpy(out + 12 * 3, buffer, 12);
+    base64_decode<exact>(out + 12 * 3, b.chunks[3]);
   }
 };

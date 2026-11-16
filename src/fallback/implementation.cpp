@@ -431,6 +431,11 @@ simdutf_warn_unused size_t
 implementation::count_utf8(const char *input, size_t length) const noexcept {
   return scalar::utf8::count_code_points(input, length);
 }
+simdutf_warn_unused utf8_result implementation::validate_utf8_with_counts(
+    const char *buf, size_t len) const noexcept {
+  return scalar::utf8::validate_with_counts(buf, len);
+}
+
 #endif // SIMDUTF_FEATURE_UTF8
 
 #if SIMDUTF_FEATURE_UTF8 && SIMDUTF_FEATURE_LATIN1
@@ -574,12 +579,22 @@ size_t implementation::binary_to_base64_with_lines(
 
 const char *implementation::find(const char *start, const char *end,
                                  char character) const noexcept {
-  return std::find(start, end, character);
+  for (; start < end; ++start) {
+    if (*start == character) {
+      return start;
+    }
+  }
+  return end;
 }
 
 const char16_t *implementation::find(const char16_t *start, const char16_t *end,
                                      char16_t character) const noexcept {
-  return std::find(start, end, character);
+  for (; start < end; ++start) {
+    if (*start == character) {
+      return start;
+    }
+  }
+  return end;
 }
 #endif // SIMDUTF_FEATURE_BASE64
 

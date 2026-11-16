@@ -1,4 +1,7 @@
 #include "simdutf.h"
+// Overridden by kernels that must clear the upper vector state before calling
+// scalar code (see simdutf/haswell/begin.h).
+#define SIMDUTF_VZEROUPPER() (void)0
 
 #include "encoding_types.cpp"
 #include "error.cpp"
@@ -77,6 +80,7 @@ SIMDUTF_POP_DISABLE_WARNINGS
     (SIMDUTF_FEATURE_UTF16 || SIMDUTF_FEATURE_UTF32 || SIMDUTF_FEATURE_LATIN1)
   #include "simdutf/scalar/utf8_to_utf16/valid_utf8_to_utf16.h"
   #include "simdutf/scalar/utf8_to_utf16/utf8_to_utf16.h"
+  #include "simdutf/scalar/utf8_to_utf16/utf8_to_utf16_with_replacement.h"
 #endif // SIMDUTF_FEATURE_UTF8 && (SIMDUTF_FEATURE_UTF16 ||
        // SIMDUTF_FEATURE_UTF32 || SIMDUTF_FEATURE_LATIN1)
 

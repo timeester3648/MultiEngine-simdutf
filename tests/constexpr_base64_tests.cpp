@@ -3,7 +3,10 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <span>
+#include <string_view>
 #include <tuple>
+#include <vector>
 
 #include <tests/helpers/fixed_string.h>
 #include <tests/helpers/test.h>
@@ -204,34 +207,11 @@ TEST(compile_time_binary_to_base64_char) {
   static_assert(expected == encoded);
 }
 
-namespace {
-// this is just to demo that it is possible to do _base64 literals.
-template <std::size_t N> struct Base64LiteralHelper {
-  char storage[N - 1];
-
-  static constexpr std::size_t size() noexcept { return N - 1; }
-
-  constexpr Base64LiteralHelper(const char (&str)[N]) {
-    static_assert(N > 1, "weird size");
-    std::copy(str, str + size(), storage);
-  }
-};
-
-template <Base64LiteralHelper a> constexpr auto operator""_base64() {
-  using namespace simdutf::tests::helpers;
-  constexpr auto N = a.size();
-  constexpr std::span data(a.storage);
-  constexpr CTString<char, N> tmp(data);
-  return b64_to_binary<tmp>().template as_array<std::uint8_t>();
-}
-
-} // namespace
-
-TEST(compile_time_base64_literal_demo) {
-  using namespace simdutf::tests::helpers;
+TEST(compile_time_base64_literal) {
+  using namespace simdutf::literals;
 
   constexpr std::array decoded = "QWJyYWNhZGFicmEh"_base64;
-  const auto readable = std::string(begin(decoded), end(decoded));
+  const auto readable = std::string(decoded.data(), decoded.size());
   ASSERT_EQUAL(readable, "Abracadabra!");
 
   static_assert(decoded.size() == 12);
@@ -247,6 +227,34 @@ TEST(compile_time_base64_literal_demo) {
   static_assert(decoded[9] == 'r');
   static_assert(decoded[10] == 'a');
   static_assert(decoded[11] == '!');
+}
+
+TEST(compile_time_base64_literal_with_spaces) {
+  using namespace simdutf::literals;
+
+  constexpr auto decoded = "  QWJy  YWNhZGFicmEh  "_base64;
+  const auto readable = std::string(decoded.data(), decoded.size());
+  ASSERT_EQUAL(readable, "Abracadabra!");
+  static_assert(decoded.size() == 12);
+}
+
+TEST(compile_time_base64_literal_with_newlines) {
+  using namespace simdutf::literals;
+
+  constexpr auto decoded = R"(  QWJy  YWNhZGFi
+
+
+cmEh  )"_base64;
+  const auto readable = std::string(decoded.data(), decoded.size());
+  ASSERT_EQUAL(readable, "Abracadabra!");
+  static_assert(decoded.size() == 12);
+}
+
+TEST(compile_time_base64_literal_empty) {
+  using namespace simdutf::literals;
+
+  constexpr auto decoded = ""_base64;
+  static_assert(decoded.size() == 0);
 }
 
 namespace {
@@ -378,6 +386,390 @@ TEST(compile_time_base64_to_binary_safe) {
     constexpr auto binary_again = b64_to_binary_safe<base64>();
     static_assert(binary_again == binary);
   }
+}
+
+namespace {
+
+// Of course, you don't really need base64_to_binary_details at compile time,
+// but this is just to show that it is possible.
+template <auto input, simdutf::last_chunk_handling_options last_chunk_options =
+                          simdutf::last_chunk_handling_options::loose>
+  requires simdutf::tests::helpers::any_ctstring<decltype(input)>
+constexpr auto b64_to_bin_details_impl() {
+  using namespace simdutf::tests::helpers;
+  constexpr auto Nmax = simdutf::maximal_binary_length_from_base64(input);
+  CTString<char, Nmax> buffer{};
+  auto r = simdutf::base64_to_binary_details(
+      input, buffer, simdutf::base64_default, last_chunk_options);
+  return std::tuple(r.error, r.input_count, buffer, r.output_count);
+}
+
+template <auto input, simdutf::last_chunk_handling_options last_chunk_options =
+                          simdutf::last_chunk_handling_options::loose>
+  requires simdutf::tests::helpers::any_ctstring<decltype(input)>
+constexpr auto b64_to_binary_details() {
+  constexpr auto r = b64_to_bin_details_impl<input, last_chunk_options>();
+  constexpr auto error = std::get<0>(r);
+  static_assert(error == simdutf::error_code::SUCCESS);
+  constexpr auto ret = std::get<2>(r);
+  constexpr auto outlen = std::get<3>(r);
+  static_assert(ret.size() >= outlen);
+  if constexpr (ret.size() != outlen) {
+    return ret.template shrink<outlen>();
+  } else {
+    return ret;
+  }
+}
+
+} // namespace
+
+TEST(compile_time_base64_to_binary_details) {
+  using namespace simdutf::tests::helpers;
+  constexpr auto binary = "Abracadabra!"_latin1;
+  static_assert(binary.size() == 12);
+
+  {
+    constexpr auto base64 = "QWJyYWNhZGFicmEh"_latin1;
+    constexpr auto binary_again = b64_to_binary_details<base64>();
+    static_assert(binary_again == binary);
+  }
+
+  {
+    constexpr auto base64 = "   QWJyYWNhZGF icmEh   "_latin1;
+    constexpr auto binary_again = b64_to_binary_details<base64>();
+    static_assert(binary_again == binary);
+  }
+
+  {
+    constexpr auto base64 = u"QWJyYWNhZGFicmEh"_utf16;
+    constexpr auto binary_again = b64_to_binary_details<base64>();
+    static_assert(binary_again == binary);
+  }
+
+  {
+    constexpr auto base64 = u"   QWJyYWNhZGF icmEh   "_utf16;
+    constexpr auto binary_again = b64_to_binary_details<base64>();
+    static_assert(binary_again == binary);
+  }
+}
+
+TEST(compile_time_base64_to_binary_details_stop_before_partial) {
+  using namespace simdutf::tests::helpers;
+  constexpr auto expected = "Abr"_latin1; // "QWJy" -> "Abr"
+
+  // "QWJy YQ": 4 complete + 2 incomplete base64 chars (with space).
+  // stop_before_partial should decode only the first complete group.
+  {
+    constexpr auto base64 = "QWJy YQ"_latin1;
+    constexpr auto r = b64_to_bin_details_impl<
+        base64, simdutf::last_chunk_handling_options::stop_before_partial>();
+    static_assert(std::get<0>(r) == simdutf::error_code::SUCCESS);
+    // input_count should be less than the full input length
+    static_assert(std::get<1>(r) < base64.size());
+    static_assert(std::get<3>(r) == expected.size());
+  }
+
+  // Complete input: stop_before_partial consumes everything.
+  {
+    constexpr auto base64 = "QWJyYWNhZGFicmEh"_latin1;
+    constexpr auto binary = "Abracadabra!"_latin1;
+    constexpr auto binary_again = b64_to_binary_details<
+        base64, simdutf::last_chunk_handling_options::stop_before_partial>();
+    static_assert(binary_again == binary);
+  }
+}
+
+TEST(compile_time_base64_to_binary_details_invalid_character) {
+  using namespace simdutf::tests::helpers;
+
+  // '!' at position 4 is invalid
+  {
+    constexpr auto base64 = "QWJy!!!"_latin1;
+    constexpr auto r = b64_to_bin_details_impl<base64>();
+    static_assert(std::get<0>(r) ==
+                  simdutf::error_code::INVALID_BASE64_CHARACTER);
+    static_assert(std::get<1>(r) == 4); // position of first '!'
+  }
+}
+
+TEST(compile_time_base64_to_binary_details_input_remainder) {
+  using namespace simdutf::tests::helpers;
+
+  // 5 base64 chars: 4 form a group, 1 remainder -> error
+  {
+    constexpr auto base64 = "QWJyY"_latin1;
+    constexpr auto r = b64_to_bin_details_impl<base64>();
+    static_assert(std::get<0>(r) ==
+                  simdutf::error_code::BASE64_INPUT_REMAINDER);
+  }
+}
+
+namespace {
+
+// The bytes include 0x00, 0x7f, 0x80 and up, and the encoding includes + and /.
+constexpr std::array<unsigned char, 12> byte_like_binary = {
+    0x41, 0x62, 0x72, 0x61, 0x00, 0x7f, 0x80, 0xbf, 0xc0, 0xfb, 0xfe, 0xff};
+constexpr std::string_view byte_like_base64 = "QWJyYQB/gL/A+/7/";
+
+template <typename T, typename Container>
+constexpr void fill_from(const auto &from, Container &to) {
+  std::ranges::transform(from, to.begin(),
+                         [](auto c) { return static_cast<T>(c); });
+}
+
+template <typename T> void check_byte_like_spans_at_run_time() {
+  const auto &bin = byte_like_binary;
+  const auto &b64 = byte_like_base64;
+  std::vector<T> binary(bin.size());
+  fill_from<T>(bin, binary);
+  std::vector<T> encoded(b64.size());
+  fill_from<T>(b64, encoded);
+  std::vector<char16_t> encoded16(b64.size());
+  fill_from<char16_t>(b64, encoded16);
+
+  std::vector<T> out(64);
+  ASSERT_EQUAL(simdutf::binary_to_base64(binary, out), b64.size());
+  ASSERT_TRUE(std::ranges::equal(std::span(out).first(b64.size()), encoded));
+
+  std::ranges::fill(out, T{});
+  ASSERT_EQUAL(simdutf::binary_to_base64_with_lines(binary, out), b64.size());
+  ASSERT_TRUE(std::ranges::equal(std::span(out).first(b64.size()), encoded));
+
+  ASSERT_EQUAL(simdutf::binary_length_from_base64(encoded), bin.size());
+
+  std::ranges::fill(out, T{});
+  const auto r1 = simdutf::base64_to_binary(encoded, out);
+  ASSERT_EQUAL(r1.error, simdutf::error_code::SUCCESS);
+  ASSERT_EQUAL(r1.count, bin.size());
+  ASSERT_TRUE(std::ranges::equal(std::span(out).first(bin.size()), binary));
+
+  std::ranges::fill(out, T{});
+  const auto r2 = simdutf::base64_to_binary_details(encoded, out);
+  ASSERT_EQUAL(r2.error, simdutf::error_code::SUCCESS);
+  ASSERT_EQUAL(r2.output_count, bin.size());
+  ASSERT_TRUE(std::ranges::equal(std::span(out).first(bin.size()), binary));
+
+  std::ranges::fill(out, T{});
+  const auto [r3, outlen] = simdutf::base64_to_binary_safe(encoded, out);
+  ASSERT_EQUAL(r3.error, simdutf::error_code::SUCCESS);
+  ASSERT_EQUAL(outlen, bin.size());
+  ASSERT_TRUE(std::ranges::equal(std::span(out).first(bin.size()), binary));
+
+  std::ranges::fill(out, T{});
+  const auto r4 =
+      simdutf::base64_to_binary(std::span<const char16_t>(encoded16), out);
+  ASSERT_EQUAL(r4.error, simdutf::error_code::SUCCESS);
+  ASSERT_EQUAL(r4.count, bin.size());
+  ASSERT_TRUE(std::ranges::equal(std::span(out).first(bin.size()), binary));
+
+  std::ranges::fill(out, T{});
+  const auto r5 = simdutf::base64_to_binary_details(
+      std::span<const char16_t>(encoded16), out);
+  ASSERT_EQUAL(r5.error, simdutf::error_code::SUCCESS);
+  ASSERT_EQUAL(r5.output_count, bin.size());
+  ASSERT_TRUE(std::ranges::equal(std::span(out).first(bin.size()), binary));
+
+  std::ranges::fill(out, T{});
+  const auto [r6, outlen6] =
+      simdutf::base64_to_binary_safe(std::span<const char16_t>(encoded16), out);
+  ASSERT_EQUAL(r6.error, simdutf::error_code::SUCCESS);
+  ASSERT_EQUAL(outlen6, bin.size());
+  ASSERT_TRUE(std::ranges::equal(std::span(out).first(bin.size()), binary));
+}
+
+template <typename T> constexpr bool check_byte_like_spans_at_compile_time() {
+  constexpr auto &bin = byte_like_binary;
+  constexpr auto &b64 = byte_like_base64;
+  std::array<T, bin.size()> binary{};
+  fill_from<T>(bin, binary);
+  std::array<T, b64.size()> encoded{};
+  fill_from<T>(b64, encoded);
+  std::array<char16_t, b64.size()> encoded16{};
+  fill_from<char16_t>(b64, encoded16);
+
+  std::array<T, b64.size()> enc_out{};
+  if (simdutf::binary_to_base64(binary, enc_out) != b64.size() ||
+      enc_out != encoded) {
+    return false;
+  }
+  enc_out = {};
+  if (simdutf::binary_to_base64_with_lines(binary, enc_out) != b64.size() ||
+      enc_out != encoded) {
+    return false;
+  }
+  if (simdutf::binary_length_from_base64(encoded) != bin.size()) {
+    return false;
+  }
+
+  std::array<T, bin.size()> out{};
+  const auto r1 = simdutf::base64_to_binary(encoded, out);
+  if (r1.error != simdutf::error_code::SUCCESS || r1.count != bin.size() ||
+      out != binary) {
+    return false;
+  }
+  out = {};
+  const auto r2 = simdutf::base64_to_binary_details(encoded, out);
+  if (r2.error != simdutf::error_code::SUCCESS ||
+      r2.output_count != bin.size() || out != binary) {
+    return false;
+  }
+  out = {};
+  const auto [r3, outlen] = simdutf::base64_to_binary_safe(encoded, out);
+  if (r3.error != simdutf::error_code::SUCCESS || outlen != bin.size() ||
+      out != binary) {
+    return false;
+  }
+
+  out = {};
+  const auto r4 =
+      simdutf::base64_to_binary(std::span<const char16_t>(encoded16), out);
+  if (r4.error != simdutf::error_code::SUCCESS || r4.count != bin.size() ||
+      out != binary) {
+    return false;
+  }
+  out = {};
+  const auto r5 = simdutf::base64_to_binary_details(
+      std::span<const char16_t>(encoded16), out);
+  if (r5.error != simdutf::error_code::SUCCESS ||
+      r5.output_count != bin.size() || out != binary) {
+    return false;
+  }
+  out = {};
+  const auto [r6, outlen6] =
+      simdutf::base64_to_binary_safe(std::span<const char16_t>(encoded16), out);
+  if (r6.error != simdutf::error_code::SUCCESS || outlen6 != bin.size() ||
+      out != binary) {
+    return false;
+  }
+  return true;
+}
+
+template <typename T> constexpr bool check_uninitialized_byte_like_output() {
+  constexpr auto &bin = byte_like_binary;
+  constexpr auto &b64 = byte_like_base64;
+  std::array<T, b64.size()> encoded;
+  if (simdutf::binary_to_base64(bin, encoded) != b64.size()) {
+    return false;
+  }
+  std::array<T, bin.size()> out;
+  const auto r = simdutf::base64_to_binary(encoded, out);
+  if (r.error != simdutf::error_code::SUCCESS || r.count != bin.size()) {
+    return false;
+  }
+  std::array<T, bin.size()> out2;
+  const auto [r2, outlen] = simdutf::base64_to_binary_safe(encoded, out2);
+  if (r2.error != simdutf::error_code::SUCCESS || outlen != bin.size()) {
+    return false;
+  }
+  for (std::size_t i = 0; i < bin.size(); i++) {
+    if (static_cast<unsigned char>(out[i]) != bin[i] ||
+        static_cast<unsigned char>(out2[i]) != bin[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+template <typename T> constexpr bool check_byte_like_output_past_written() {
+  constexpr auto &bin = byte_like_binary;
+  constexpr auto &b64 = byte_like_base64;
+  constexpr T mark = static_cast<T>(0x5a);
+  std::array<T, bin.size()> binary{};
+  fill_from<T>(bin, binary);
+  std::array<T, b64.size()> encoded{};
+  fill_from<T>(b64, encoded);
+  std::array<char16_t, b64.size()> encoded16{};
+  fill_from<char16_t>(b64, encoded16);
+  const auto marked_from = [&](const auto &out, std::size_t n) {
+    for (std::size_t i = n; i < out.size(); i++) {
+      if (out[i] != mark) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  std::array<T, 1> one{mark};
+  (void)simdutf::binary_to_base64(std::span<const T>(), one);
+  if (!marked_from(one, 0)) {
+    return false;
+  }
+  std::array<T, b64.size() + 2> enc_out;
+  enc_out.fill(mark);
+  (void)simdutf::binary_to_base64(binary, enc_out);
+  if (!marked_from(enc_out, b64.size())) {
+    return false;
+  }
+  enc_out.fill(mark);
+  (void)simdutf::binary_to_base64_with_lines(binary, enc_out);
+  if (!marked_from(enc_out, b64.size())) {
+    return false;
+  }
+
+  std::array<T, bin.size() + 2> out;
+  out.fill(mark);
+  (void)simdutf::base64_to_binary(encoded, out);
+  if (!marked_from(out, bin.size())) {
+    return false;
+  }
+  out.fill(mark);
+  (void)simdutf::base64_to_binary(std::span<const char16_t>(encoded16), out);
+  if (!marked_from(out, bin.size())) {
+    return false;
+  }
+  out.fill(mark);
+  (void)simdutf::base64_to_binary_details(encoded, out);
+  if (!marked_from(out, bin.size())) {
+    return false;
+  }
+  out.fill(mark);
+  (void)simdutf::base64_to_binary_details(std::span<const char16_t>(encoded16),
+                                          out);
+  if (!marked_from(out, bin.size())) {
+    return false;
+  }
+  out.fill(mark);
+  (void)simdutf::base64_to_binary_safe(encoded, out);
+  if (!marked_from(out, bin.size())) {
+    return false;
+  }
+  out.fill(mark);
+  (void)simdutf::base64_to_binary_safe(std::span<const char16_t>(encoded16),
+                                       out);
+  return marked_from(out, bin.size());
+}
+
+} // namespace
+
+TEST(run_time_base64_byte_like_spans) {
+  check_byte_like_spans_at_run_time<char>();
+  check_byte_like_spans_at_run_time<unsigned char>();
+  check_byte_like_spans_at_run_time<signed char>();
+  check_byte_like_spans_at_run_time<char8_t>();
+  check_byte_like_spans_at_run_time<std::byte>();
+}
+
+TEST(compile_time_base64_byte_like_spans) {
+  static_assert(check_byte_like_spans_at_compile_time<char>());
+  static_assert(check_byte_like_spans_at_compile_time<unsigned char>());
+  static_assert(check_byte_like_spans_at_compile_time<signed char>());
+  static_assert(check_byte_like_spans_at_compile_time<char8_t>());
+  static_assert(check_byte_like_spans_at_compile_time<std::byte>());
+}
+
+TEST(compile_time_base64_uninitialized_byte_like_output) {
+  static_assert(check_uninitialized_byte_like_output<unsigned char>());
+  static_assert(check_uninitialized_byte_like_output<signed char>());
+  static_assert(check_uninitialized_byte_like_output<char8_t>());
+  static_assert(check_uninitialized_byte_like_output<std::byte>());
+}
+
+TEST(compile_time_base64_byte_like_output_past_written) {
+  static_assert(check_byte_like_output_past_written<char>());
+  static_assert(check_byte_like_output_past_written<unsigned char>());
+  static_assert(check_byte_like_output_past_written<signed char>());
+  static_assert(check_byte_like_output_past_written<char8_t>());
+  static_assert(check_byte_like_output_past_written<std::byte>());
 }
 
 #else

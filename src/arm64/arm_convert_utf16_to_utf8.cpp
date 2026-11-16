@@ -64,7 +64,7 @@ arm_convert_utf16_to_utf8(const char16_t *buf, size_t len, char *utf8_out) {
           // https://github.com/simdutf/simdutf/issues/92
   while (end - buf >= std::ptrdiff_t(16 + safety_margin)) {
     uint16x8_t in = vld1q_u16(reinterpret_cast<const uint16_t *>(buf));
-    if simdutf_constexpr (!match_system(big_endian)) {
+    if constexpr (!match_system(big_endian)) {
       in = vreinterpretq_u16_u8(vrev16q_u8(vreinterpretq_u8_u16(in)));
     }
     if (vmaxvq_u16(in) <= 0x7F) { // ASCII fast path!!!!
@@ -72,7 +72,7 @@ arm_convert_utf16_to_utf8(const char16_t *buf, size_t len, char *utf8_out) {
       // characters.
       uint16x8_t nextin =
           vld1q_u16(reinterpret_cast<const uint16_t *>(buf) + 8);
-      if simdutf_constexpr (!match_system(big_endian)) {
+      if constexpr (!match_system(big_endian)) {
         nextin = vreinterpretq_u16_u8(vrev16q_u8(vreinterpretq_u8_u16(nextin)));
       }
       if (vmaxvq_u16(nextin) > 0x7F) {
@@ -147,7 +147,7 @@ arm_convert_utf16_to_utf8(const char16_t *buf, size_t len, char *utf8_out) {
         vceqq_u16(vandq_u16(in, v_f800), v_d800);
     // It might seem like checking for surrogates_bitmask == 0xc000 could help.
     // However, it is likely an uncommon occurrence.
-    if (vmaxvq_u16(surrogates_bytemask) == 0) {
+    if (!any_lane_set(surrogates_bytemask)) {
       // case: code units from register produce either 1, 2 or 3 UTF-8 bytes
 #ifdef SIMDUTF_REGULAR_VISUAL_STUDIO
       const uint16x8_t dup_even = simdutf_make_uint16x8_t(
@@ -333,7 +333,7 @@ arm_convert_utf16_to_utf8_with_errors(const char16_t *buf, size_t len,
 
   while (end - buf >= std::ptrdiff_t(16 + safety_margin)) {
     uint16x8_t in = vld1q_u16(reinterpret_cast<const uint16_t *>(buf));
-    if simdutf_constexpr (!match_system(big_endian)) {
+    if constexpr (!match_system(big_endian)) {
       in = vreinterpretq_u16_u8(vrev16q_u8(vreinterpretq_u8_u16(in)));
     }
     if (vmaxvq_u16(in) <= 0x7F) { // ASCII fast path!!!!
@@ -341,7 +341,7 @@ arm_convert_utf16_to_utf8_with_errors(const char16_t *buf, size_t len,
       // characters.
       uint16x8_t nextin =
           vld1q_u16(reinterpret_cast<const uint16_t *>(buf) + 8);
-      if simdutf_constexpr (!match_system(big_endian)) {
+      if constexpr (!match_system(big_endian)) {
         nextin = vreinterpretq_u16_u8(vrev16q_u8(vreinterpretq_u8_u16(nextin)));
       }
       if (vmaxvq_u16(nextin) > 0x7F) {
@@ -416,7 +416,7 @@ arm_convert_utf16_to_utf8_with_errors(const char16_t *buf, size_t len,
         vceqq_u16(vandq_u16(in, v_f800), v_d800);
     // It might seem like checking for surrogates_bitmask == 0xc000 could help.
     // However, it is likely an uncommon occurrence.
-    if (vmaxvq_u16(surrogates_bytemask) == 0) {
+    if (!any_lane_set(surrogates_bytemask)) {
       // case: code units from register produce either 1, 2 or 3 UTF-8 bytes
 #ifdef SIMDUTF_REGULAR_VISUAL_STUDIO
       const uint16x8_t dup_even = simdutf_make_uint16x8_t(
@@ -605,7 +605,7 @@ arm64_utf8_length_from_utf16_bytemask(const char16_t *in, size_t size) {
     auto base_input = vld2q_u8(reinterpret_cast<const uint8_t *>(in + pos));
     //
     size_t idx = 1; // we use the second lane of the deinterleaved load
-    if simdutf_constexpr (!match_system(big_endian)) {
+    if constexpr (!match_system(big_endian)) {
       idx = 0;
     }
     size_t idx_lsb = idx ^ 1;
@@ -686,14 +686,14 @@ arm64_utf8_length_from_utf16_with_replacement(const char16_t *in, size_t size) {
   for (; size - pos >= N + 1; pos += N) {
     auto base_input = vld2q_u8(reinterpret_cast<const uint8_t *>(in + pos));
     size_t idx = 1; // we use the second lane of the deinterleaved load
-    if simdutf_constexpr (!match_system(big_endian)) {
+    if constexpr (!match_system(big_endian)) {
       idx = 0;
     }
     size_t idx_lsb = idx ^ 1;
     auto is_surrogate = vcleq_u8(
         vsubq_u8(base_input.val[idx], vdupq_n_u8(0xd8)), vdupq_n_u8(7));
     // We count on the fact that most inputs do not have surrogates.
-    if (vmaxvq_u32(vreinterpretq_u32_u8(is_surrogate)) ||
+    if (any_lane_set(vreinterpretq_u16_u8(is_surrogate)) ||
         scalar::utf16::is_low_surrogate<big_endian>(in[pos + N])) {
       any_surrogates = true;
       // there is at least one surrogate in the block

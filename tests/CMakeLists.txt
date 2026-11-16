@@ -1,11 +1,15 @@
-include(CTest)
-
 set(SIMDUTF_TEST_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../)
 if(MSVC)
   add_compile_options("/Zi" "/EHsc" "/GR" "/source-charset:utf-8")
 endif()
 add_subdirectory(helpers)
 add_subdirectory(reference)
+
+if(NOT SIMDUTF_TESTS)
+  return()
+endif()
+
+include(CTest)
 
 include(${PROJECT_SOURCE_DIR}/cmake/add_cpp_test.cmake)
 
@@ -71,6 +75,16 @@ target_link_libraries(validate_utf8_brute_force_tests
   PUBLIC simdutf::tests::helpers
          simdutf::tests::reference)
 
+add_cpp_test(validate_utf8_with_counts_brute_force_tests)
+target_link_libraries(validate_utf8_with_counts_brute_force_tests
+  PUBLIC simdutf::tests::helpers
+         simdutf::tests::reference)
+
+add_cpp_test(validate_utf8_with_counts_boundary_tests)
+target_link_libraries(validate_utf8_with_counts_boundary_tests
+  PUBLIC simdutf::tests::helpers
+         simdutf::tests::reference)
+
 add_cpp_test(validate_utf8_puzzler_tests)
 target_link_libraries(validate_utf8_puzzler_tests
   PUBLIC simdutf::tests::helpers
@@ -128,7 +142,7 @@ target_link_libraries(find_tests
          simdutf::tests::reference)
 
 add_cpp_test(convert_latin1_to_utf8_tests)
-target_link_libraries(convert_latin1_to_utf8_tests 
+target_link_libraries(convert_latin1_to_utf8_tests
   PUBLIC simdutf::tests::helpers
          simdutf::tests::reference)
 
@@ -143,25 +157,25 @@ target_link_libraries(convert_latin1_to_utf16be_tests
          simdutf::tests::reference)
 
 add_cpp_test(convert_latin1_to_utf32_tests)
-target_link_libraries(convert_latin1_to_utf32_tests 
+target_link_libraries(convert_latin1_to_utf32_tests
     PUBLIC simdutf::tests::helpers
       simdutf::tests::reference)
 
 add_cpp_test(convert_utf8_to_latin1_tests)
-target_link_libraries(convert_utf8_to_latin1_tests 
+target_link_libraries(convert_utf8_to_latin1_tests
   PUBLIC simdutf::tests::helpers
         simdutf::tests::reference)
 
 add_cpp_test(convert_utf8_to_latin1_with_errors_tests)
-target_link_libraries(convert_utf8_to_latin1_with_errors_tests 
+target_link_libraries(convert_utf8_to_latin1_with_errors_tests
   PUBLIC simdutf::tests::helpers
           simdutf::tests::reference)
-        
+
 add_cpp_test(convert_valid_utf8_to_latin1_tests)
-target_link_libraries(convert_valid_utf8_to_latin1_tests 
+target_link_libraries(convert_valid_utf8_to_latin1_tests
   PUBLIC simdutf::tests::helpers
         simdutf::tests::reference)
-         
+
 add_cpp_test(convert_valid_utf8_to_utf16le_tests)
 target_link_libraries(convert_valid_utf8_to_utf16le_tests
   PUBLIC simdutf::tests::helpers
@@ -208,32 +222,32 @@ target_link_libraries(convert_utf8_to_utf32_with_errors_tests
          simdutf::tests::reference)
 
 add_cpp_test(convert_utf16le_to_latin1_tests)
-target_link_libraries(convert_utf16le_to_latin1_tests 
+target_link_libraries(convert_utf16le_to_latin1_tests
   PUBLIC simdutf::tests::helpers
           simdutf::tests::reference)
 
 add_cpp_test(convert_utf16be_to_latin1_tests)
-target_link_libraries(convert_utf16be_to_latin1_tests 
+target_link_libraries(convert_utf16be_to_latin1_tests
   PUBLIC simdutf::tests::helpers
           simdutf::tests::reference)
 
 add_cpp_test(convert_utf16le_to_latin1_tests_with_errors)
-target_link_libraries(convert_utf16le_to_latin1_tests_with_errors 
+target_link_libraries(convert_utf16le_to_latin1_tests_with_errors
   PUBLIC simdutf::tests::helpers
           simdutf::tests::reference)
 
 add_cpp_test(convert_utf16be_to_latin1_tests_with_errors)
-target_link_libraries(convert_utf16be_to_latin1_tests_with_errors 
+target_link_libraries(convert_utf16be_to_latin1_tests_with_errors
   PUBLIC simdutf::tests::helpers
           simdutf::tests::reference)
 
 add_cpp_test(convert_valid_utf16le_to_latin1_tests)
-target_link_libraries(convert_valid_utf16le_to_latin1_tests 
+target_link_libraries(convert_valid_utf16le_to_latin1_tests
   PUBLIC simdutf::tests::helpers
           simdutf::tests::reference)
 
 add_cpp_test(convert_valid_utf16be_to_latin1_tests)
-target_link_libraries(convert_valid_utf16be_to_latin1_tests 
+target_link_libraries(convert_valid_utf16be_to_latin1_tests
   PUBLIC simdutf::tests::helpers
           simdutf::tests::reference)
 
@@ -261,22 +275,22 @@ add_cpp_test(convert_utf16be_to_utf8_with_errors_tests)
 target_link_libraries(convert_utf16be_to_utf8_with_errors_tests
   PUBLIC simdutf::tests::helpers
          simdutf::tests::reference)
-        
+
 add_cpp_test(convert_utf32_to_latin1_tests)
-target_link_libraries(convert_utf32_to_latin1_tests 
+target_link_libraries(convert_utf32_to_latin1_tests
   PUBLIC simdutf::tests::helpers
         simdutf::tests::reference)
 
 add_cpp_test(convert_valid_utf32_to_latin1_tests)
-target_link_libraries(convert_valid_utf32_to_latin1_tests 
+target_link_libraries(convert_valid_utf32_to_latin1_tests
   PUBLIC simdutf::tests::helpers
         simdutf::tests::reference)
 
 add_cpp_test(convert_utf32_to_latin1_with_errors_tests)
-target_link_libraries(convert_utf32_to_latin1_with_errors_tests 
+target_link_libraries(convert_utf32_to_latin1_with_errors_tests
   PUBLIC simdutf::tests::helpers
-        simdutf::tests::reference)         
-          
+        simdutf::tests::reference)
+
 add_cpp_test(convert_utf32_to_utf8_tests)
 target_link_libraries(convert_utf32_to_utf8_tests
   PUBLIC simdutf::tests::helpers
@@ -391,7 +405,7 @@ add_cpp_test(text_encoding_tests)
 target_link_libraries(text_encoding_tests
   PUBLIC simdutf::tests::helpers
          simdutf::tests::reference)
-         
+
 add_cpp_test(basic_fuzzer)
 target_link_libraries(basic_fuzzer
   PUBLIC simdutf::tests::helpers
@@ -456,6 +470,10 @@ add_cpp_test(convert_utf16_to_utf8_with_replacement_tests)
 target_link_libraries(convert_utf16_to_utf8_with_replacement_tests
   PUBLIC simdutf::tests::helpers)
 
+add_cpp_test(convert_utf8_to_utf16_with_replacement_tests)
+target_link_libraries(convert_utf8_to_utf16_with_replacement_tests
+  PUBLIC simdutf::tests::helpers)
+
 add_cpp_test(fixed_string_tests)
 target_link_libraries(fixed_string_tests
   PUBLIC simdutf::tests::helpers
@@ -480,4 +498,25 @@ if(Python3_FOUND AND GIT_EXECUTABLE)
     WORKING_DIRECTORY ${SIMDUTF_SOURCE_DIR}
   )
   set_tests_properties(check_feature_macros PROPERTIES SKIP_RETURN_CODE 142) # Skip if no relevant files are found
+endif()
+
+if(SIMDUTF_TOOLS AND SIMDUTF_TOOL_TESTS AND Python3_FOUND)
+  add_test(NAME fastbase64_python_test
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/fastbase64/test_fastbase64.py $<TARGET_FILE:fastbase64> $<TARGET_FILE_DIR:fastbase64>/fastbase64.coreutils$<TARGET_FILE_SUFFIX:fastbase64>
+    WORKING_DIRECTORY ${SIMDUTF_SOURCE_DIR}
+  )
+  add_test(NAME fastbase64_system_test
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/fastbase64/test_system_fastbase64.py $<TARGET_FILE:fastbase64> $<TARGET_FILE_DIR:fastbase64>/fastbase64.coreutils$<TARGET_FILE_SUFFIX:fastbase64>
+    WORKING_DIRECTORY ${SIMDUTF_SOURCE_DIR}
+  )
+endif()
+
+
+# Smoke test: compile a pure-C program against the C API and link it without
+# the C++ standard library, proving libsimdutf-nostdlibcxx.a is self-contained.
+if(TARGET simdutf-nostdlibcxx AND NOT SIMDUTF_SANITIZE AND NOT SIMDUTF_SANITIZE_UNDEFINED AND NOT SIMDUTF_SANITIZE_THREAD)
+  add_executable(nostdlibcxx_c_api_test nostdlibcxx_c_api_test.c)
+  target_link_libraries(nostdlibcxx_c_api_test PRIVATE simdutf-nostdlibcxx)
+  target_link_options(nostdlibcxx_c_api_test PRIVATE -nostdlib++)
+  add_test(NAME nostdlibcxx_c_api_test COMMAND nostdlibcxx_c_api_test)
 endif()

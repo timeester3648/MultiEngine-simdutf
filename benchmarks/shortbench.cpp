@@ -3,16 +3,16 @@
 // You can process the result with the script at scripts/shortinputplots.py
 // to generate plots. See the instructions in that script for more details.
 #include <algorithm>
-#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
+#include <exception>
 #include <fstream>
 #include <functional>
 #include <iostream>
 #include <span>
-#include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "simdutf.h"
@@ -498,7 +498,7 @@ int main(int argc, char *argv[]) {
     } else {
       data = read_file(filename);
       file_size = data.size();
-      actual_max = std::min(max_size, file_size);
+      actual_max = simdutf::detail::min(max_size, file_size);
       input_desc = std::string("file: ") + filename;
     }
 
@@ -510,8 +510,9 @@ int main(int argc, char *argv[]) {
                input_desc.c_str());
         printf("# Input size: %zu bytes\n", file_size);
         printf("# Max benchmark size: %zu bytes\n", actual_max);
-        printf("# Current system: %s\n",
-               simdutf::get_active_implementation()->name().c_str());
+        printf("# Current system: %.*s\n",
+               int(simdutf::get_active_implementation()->name().size()),
+               simdutf::get_active_implementation()->name().data());
         printf("\n");
 
         print_table_header(has_events);
@@ -531,8 +532,9 @@ int main(int argc, char *argv[]) {
              input_desc.c_str());
       printf("# Input size: %zu bytes\n", file_size);
       printf("# Max benchmark size: %zu bytes\n", actual_max);
-      printf("# Current system: %s\n",
-             simdutf::get_active_implementation()->name().c_str());
+      printf("# Current system: %.*s\n",
+             int(simdutf::get_active_implementation()->name().size()),
+             simdutf::get_active_implementation()->name().data());
       printf("\n");
 
       print_table_header(has_events);

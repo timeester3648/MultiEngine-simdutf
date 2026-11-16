@@ -15,6 +15,66 @@
 // U+FFFD in UTF-8 is 0xEF 0xBF 0xBD
 constexpr char fffd_utf8[] = {char(0xef), char(0xbf), char(0xbd)};
 
+TEST(replacement_safe_reports_input_and_output_counts) {
+  std::vector<char16_t> input(32, u'A');
+  const std::vector<char16_t> suffix{char16_t(0x00e9), char16_t(0x20ac),
+                                     char16_t(0xd83d), char16_t(0xde00),
+                                     char16_t(0xd800), u'B',
+                                     char16_t(0xdc00), u'C'};
+  input.insert(input.end(), suffix.begin(), suffix.end());
+  input.insert(input.end(), 32, u'Z');
+
+  const simdutf::result length_result =
+      simdutf::utf8_length_from_utf16_with_replacement(input.data(),
+                                                       input.size());
+  std::vector<char> expected(length_result.count);
+  ASSERT_EQUAL(simdutf::convert_utf16_to_utf8_with_replacement(
+                   input.data(), input.size(), expected.data()),
+               expected.size());
+
+  for (size_t output_size = 0; output_size <= expected.size(); output_size++) {
+    std::vector<char> output(output_size);
+    const simdutf::full_result result =
+        simdutf::convert_utf16_to_utf8_with_replacement_safe(
+            input.data(), input.size(), output.data(), output.size());
+
+    size_t expected_input_count = 0;
+    size_t expected_output_count = 0;
+    while (expected_input_count < input.size()) {
+      const uint16_t word = input[expected_input_count];
+      size_t input_width = 1;
+      size_t output_width;
+      if (word < 0x80) {
+        output_width = 1;
+      } else if (word < 0x800) {
+        output_width = 2;
+      } else if (word >= 0xd800 && word <= 0xdbff &&
+                 expected_input_count + 1 < input.size() &&
+                 input[expected_input_count + 1] >= 0xdc00 &&
+                 input[expected_input_count + 1] <= 0xdfff) {
+        input_width = 2;
+        output_width = 4;
+      } else {
+        output_width = 3;
+      }
+      if (expected_output_count + output_width > output_size) {
+        break;
+      }
+      expected_input_count += input_width;
+      expected_output_count += output_width;
+    }
+
+    ASSERT_EQUAL(result.input_count, expected_input_count);
+    ASSERT_EQUAL(result.output_count, expected_output_count);
+    ASSERT_EQUAL(result.error,
+                 expected_input_count == input.size()
+                     ? simdutf::error_code::SUCCESS
+                     : simdutf::error_code::OUTPUT_BUFFER_TOO_SMALL);
+    ASSERT_TRUE(std::equal(output.begin(), output.begin() + result.output_count,
+                           expected.begin()));
+  }
+}
+
 // Test: valid UTF-16 should produce the same output as convert_utf16_to_utf8
 TEST(valid_utf16le_roundtrip) {
   // ASCII + BMP characters
@@ -141,6 +201,139 @@ TEST(pure_ascii_le) {
   ASSERT_TRUE(std::memcmp(output.data(), "Hello", 5) == 0);
 }
 
+TEST(valid_utf16be_roundtrip) {
+  std::vector<char16_t> input = {
+      to_utf16be(u'H'),      to_utf16be(u'e'),      to_utf16be(u'l'),
+      to_utf16be(u'l'),      to_utf16be(u'o'),      to_utf16be(u' '),
+      to_utf16be(u'\u00e9'), to_utf16be(u'\u4e16'), to_utf16be(u'\u754c')};
+  size_t expected_len =
+      simdutf::utf8_length_from_utf16be(input.data(), input.size());
+  std::vector<char> expected(expected_len);
+  size_t written_expected = implementation.convert_utf16be_to_utf8(
+      input.data(), input.size(), expected.data());
+
+  std::vector<char> actual(expected_len + 10);
+  size_t written_actual =
+      implementation.convert_utf16be_to_utf8_with_replacement(
+          input.data(), input.size(), actual.data());
+
+  ASSERT_EQUAL(written_expected, written_actual);
+  ASSERT_TRUE(std::memcmp(expected.data(), actual.data(), written_actual) == 0);
+}
+
+TEST(valid_surrogate_pair_be) {
+  std::vector<char16_t> input = {to_utf16be(char16_t(0xD83D)),
+                                 to_utf16be(char16_t(0xDE00))};
+  std::vector<char> output(8);
+  size_t written = implementation.convert_utf16be_to_utf8_with_replacement(
+      input.data(), input.size(), output.data());
+  ASSERT_EQUAL(written, size_t(4));
+  ASSERT_EQUAL(uint8_t(output[0]), uint8_t(0xF0));
+  ASSERT_EQUAL(uint8_t(output[1]), uint8_t(0x9F));
+  ASSERT_EQUAL(uint8_t(output[2]), uint8_t(0x98));
+  ASSERT_EQUAL(uint8_t(output[3]), uint8_t(0x80));
+}
+
+TEST(unpaired_high_surrogate_be) {
+  std::vector<char16_t> input = {to_utf16be(char16_t(0xD800)),
+                                 to_utf16be(u'A')};
+  std::vector<char> output(8);
+  size_t written = implementation.convert_utf16be_to_utf8_with_replacement(
+      input.data(), input.size(), output.data());
+  ASSERT_EQUAL(written, size_t(4));
+  ASSERT_TRUE(std::memcmp(output.data(), fffd_utf8, 3) == 0);
+  ASSERT_EQUAL(output[3], 'A');
+}
+
+TEST(unpaired_low_surrogate_be) {
+  std::vector<char16_t> input = {to_utf16be(u'B'), to_utf16be(char16_t(0xDC00)),
+                                 to_utf16be(u'C')};
+  std::vector<char> output(16);
+  size_t written = implementation.convert_utf16be_to_utf8_with_replacement(
+      input.data(), input.size(), output.data());
+  ASSERT_EQUAL(written, size_t(5));
+  ASSERT_EQUAL(output[0], 'B');
+  ASSERT_TRUE(std::memcmp(output.data() + 1, fffd_utf8, 3) == 0);
+  ASSERT_EQUAL(output[4], 'C');
+}
+
+TEST(reversed_surrogate_pair_be) {
+  std::vector<char16_t> input = {to_utf16be(char16_t(0xDC00)),
+                                 to_utf16be(char16_t(0xD800))};
+  std::vector<char> output(16);
+  size_t written = implementation.convert_utf16be_to_utf8_with_replacement(
+      input.data(), input.size(), output.data());
+  ASSERT_EQUAL(written, size_t(6));
+  ASSERT_TRUE(std::memcmp(output.data(), fffd_utf8, 3) == 0);
+  ASSERT_TRUE(std::memcmp(output.data() + 3, fffd_utf8, 3) == 0);
+}
+
+TEST(length_consistency_be) {
+  std::vector<char16_t> input = {to_utf16be(u'A'),
+                                 to_utf16be(char16_t(0xD83D)),
+                                 to_utf16be(char16_t(0xDE00)),
+                                 to_utf16be(char16_t(0xD800)),
+                                 to_utf16be(u'B'),
+                                 to_utf16be(char16_t(0xDC00)),
+                                 to_utf16be(char16_t(0xDC00)),
+                                 to_utf16be(char16_t(0xD800)),
+                                 to_utf16be(u'\u4e16')};
+
+  simdutf::result len_result =
+      simdutf::utf8_length_from_utf16be_with_replacement(input.data(),
+                                                         input.size());
+
+  std::vector<char> output(input.size() * 3 + 4);
+  size_t written = implementation.convert_utf16be_to_utf8_with_replacement(
+      input.data(), input.size(), output.data());
+
+  ASSERT_EQUAL(len_result.count, written);
+}
+
+TEST(matches_well_formed_approach_be) {
+  std::vector<char16_t> input = {to_utf16be(u'A'),
+                                 to_utf16be(char16_t(0xD800)),
+                                 to_utf16be(u'B'),
+                                 to_utf16be(char16_t(0xDC00)),
+                                 to_utf16be(char16_t(0xDC00)),
+                                 to_utf16be(char16_t(0xD800)),
+                                 to_utf16be(char16_t(0xD83D)),
+                                 to_utf16be(char16_t(0xDE00))};
+
+  std::vector<char16_t> well_formed(input.size());
+  simdutf::to_well_formed_utf16be(input.data(), input.size(),
+                                  well_formed.data());
+  size_t utf8_len =
+      simdutf::utf8_length_from_utf16be(well_formed.data(), well_formed.size());
+  std::vector<char> expected(utf8_len + 1);
+  size_t written_expected = simdutf::convert_utf16be_to_utf8(
+      well_formed.data(), well_formed.size(), expected.data());
+
+  std::vector<char> actual(utf8_len + 1);
+  size_t written_actual =
+      implementation.convert_utf16be_to_utf8_with_replacement(
+          input.data(), input.size(), actual.data());
+
+  ASSERT_EQUAL(written_expected, written_actual);
+  ASSERT_TRUE(std::memcmp(expected.data(), actual.data(), written_actual) == 0);
+}
+
+TEST(output_is_valid_utf8_be) {
+  std::vector<char16_t> input = {to_utf16be(u'A'),
+                                 to_utf16be(char16_t(0xD83D)),
+                                 to_utf16be(char16_t(0xDE00)),
+                                 to_utf16be(char16_t(0xD800)),
+                                 to_utf16be(u'B'),
+                                 to_utf16be(char16_t(0xDC00)),
+                                 to_utf16be(u'\u4e16')};
+
+  std::vector<char> output(input.size() * 3 + 4);
+  size_t written = implementation.convert_utf16be_to_utf8_with_replacement(
+      input.data(), input.size(), output.data());
+
+  ASSERT_TRUE(simdutf::validate_utf8(output.data(), written));
+}
+
 // Test: consistency with utf8_length_from_utf16_with_replacement
 TEST_LOOP(length_consistency_le) {
   const size_t length = 64 + (seed % 128);
@@ -211,6 +404,50 @@ TEST_LOOP(output_is_valid_utf8_le) {
   ASSERT_TRUE(simdutf::validate_utf8(output.data(), written));
 }
 
+// Stress the SIMD block boundaries: slide an unpaired high surrogate, an
+// unpaired low surrogate, and a valid surrogate pair through every offset of a
+// multi-block buffer, comparing the with_replacement output byte-for-byte
+// against the independent to_well_formed + convert oracle. This is the case a
+// naive SIMD implementation is most likely to get wrong (a valid pair or a lone
+// surrogate landing on a 16-unit lane boundary).
+TEST(surrogate_sweep_across_boundaries_le) {
+  const size_t length = 200; // spans many 16-unit SIMD lanes
+  for (size_t p = 0; p + 1 < length; p++) {
+    for (int mode = 0; mode < 3; mode++) {
+      std::vector<char16_t> input(length);
+      for (size_t i = 0; i < length; i++) {
+        // valid, non-surrogate BMP content (mix of 1-, 2- and 3-byte forms)
+        input[i] = to_utf16le(char16_t(0x0041 + (i % 0x0500)));
+      }
+      if (mode == 0) {
+        input[p] = to_utf16le(char16_t(0xD800)); // unpaired high
+      } else if (mode == 1) {
+        input[p] = to_utf16le(char16_t(0xDC00)); // unpaired low
+      } else {
+        input[p] = to_utf16le(char16_t(0xD800)); // valid pair straddling p/p+1
+        input[p + 1] = to_utf16le(char16_t(0xDC00));
+      }
+
+      // Oracle: replace unpaired surrogates, then convert as valid UTF-16.
+      std::vector<char16_t> well_formed(length);
+      simdutf::to_well_formed_utf16le(input.data(), length, well_formed.data());
+      const size_t utf8_len =
+          simdutf::utf8_length_from_utf16le(well_formed.data(), length);
+      std::vector<char> expected(utf8_len + 1);
+      const size_t nexp = simdutf::convert_utf16le_to_utf8(
+          well_formed.data(), length, expected.data());
+
+      std::vector<char> actual(utf8_len + 1);
+      const size_t nact =
+          implementation.convert_utf16le_to_utf8_with_replacement(
+              input.data(), length, actual.data());
+
+      ASSERT_EQUAL(nexp, nact);
+      ASSERT_TRUE(std::memcmp(expected.data(), actual.data(), nact) == 0);
+    }
+  }
+}
+
 #if SIMDUTF_CPLUSPLUS23
 
 namespace {
@@ -269,6 +506,18 @@ TEST(compile_time_convert_utf16be_to_utf8_with_replacement) {
   constexpr auto result = invoke_convert_with_replacement<input>();
   constexpr auto expected = make_expected_output();
   static_assert(result == expected);
+}
+
+TEST(compile_time_convert_utf16_to_utf8_with_replacement_safe) {
+  using enum simdutf::endianness;
+  constexpr auto result = []() {
+    constexpr auto input = make_input_with_unpaired<NATIVE>();
+    simdutf::tests::helpers::CTString<char, 4> output{};
+    return simdutf::convert_utf16_to_utf8_with_replacement_safe(input, output);
+  }();
+  static_assert(result.error == simdutf::OUTPUT_BUFFER_TOO_SMALL);
+  static_assert(result.input_count == 2);
+  static_assert(result.output_count == 4);
 }
 
 #endif // SIMDUTF_CPLUSPLUS23

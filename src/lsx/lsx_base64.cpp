@@ -26,9 +26,60 @@
  * https://www.codeproject.com/Articles/276993/Base-Encoding-on-a-GPU. (2013).
  */
 
-template <bool isbase64url>
-size_t encode_base64(char *dst, const char *src, size_t srclen,
-                     base64_options options) {
+// Translate 6-bit values (0..63) to the base64 alphabet using two 32-entry
+// shuffles and a select. vshuf.b only uses the low five bits of each index,
+// so values 32..63 pick the right entry from (tbl2, tbl3) without any
+// adjustment.
+simdutf_really_inline __m128i lookup_base64(__m128i indices, __m128i tbl0,
+                                            __m128i tbl1, __m128i tbl2,
+                                            __m128i tbl3) {
+  const __m128i lo = __lsx_vshuf_b(tbl1, tbl0, indices);
+  const __m128i hi = __lsx_vshuf_b(tbl3, tbl2, indices);
+  const __m128i is_lo = __lsx_vslei_bu(indices, 31);
+  return __lsx_vbitsel_v(hi, lo, is_lo);
+}
+
+// Returns input with a line feed inserted at position K (0..15); the last
+// byte of the input is dropped and must be stored separately.
+simdutf_really_inline __m128i insert_line_feed16(__m128i input, size_t K) {
+  static const uint8_t shuffle_masks[16][16] = {
+      {15, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 15, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 15, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 15, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 15, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 15, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 15, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 15, 7, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 15, 8, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 15, 9, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 10, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 11, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 15, 12, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 13, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 14},
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}};
+  input = __lsx_vinsgr2vr_b(input, '\n', 15);
+  const __m128i mask = __lsx_vld(shuffle_masks[K], 0);
+  return __lsx_vshuf_b(input, input, mask);
+}
+
+// Stores the 16 bytes of `data` at `out` with a line feed inserted at
+// position K (0..15), writing 17 bytes in total.
+simdutf_really_inline void store_with_line_feed16(uint8_t *out, __m128i data,
+                                                  size_t K) {
+  __lsx_vst(insert_line_feed16(data, K), out, 0);
+  out[16] = uint8_t(__lsx_vpickve2gr_bu(data, 15));
+}
+
+template <bool isbase64url, bool use_lines>
+size_t encode_base64_impl(char *dst, const char *src, size_t srclen,
+                          base64_options options,
+                          size_t line_length = simdutf::default_line_length) {
+  size_t offset = 0;
+  if (line_length < 4) {
+    line_length = 4; // We do not support line_length less than 4
+  }
   // credit: Wojciech Muła
   // SSE (lookup: pshufb improved unrolled)
   const uint8_t *input = (const uint8_t *)src;
@@ -90,44 +141,89 @@ size_t encode_base64(char *dst, const char *src, size_t srclen,
     __m128i t3_3 = __lsx_vsll_h(t2_3, shift_l);
 
     __m128i input0 = __lsx_vor_v(t1_0, t3_0);
-    __m128i input0_shuf0 = __lsx_vshuf_b(base64_tbl1, base64_tbl0, input0);
-    __m128i input0_shuf1 = __lsx_vshuf_b(base64_tbl3, base64_tbl2,
-                                         __lsx_vsub_b(input0, __lsx_vldi(32)));
-    __m128i input0_mask = __lsx_vslei_bu(input0, 31);
-    __m128i input0_result =
-        __lsx_vbitsel_v(input0_shuf1, input0_shuf0, input0_mask);
-    __lsx_vst(input0_result, reinterpret_cast<__m128i *>(out), 0);
-    out += 16;
-
     __m128i input1 = __lsx_vor_v(t1_1, t3_1);
-    __m128i input1_shuf0 = __lsx_vshuf_b(base64_tbl1, base64_tbl0, input1);
-    __m128i input1_shuf1 = __lsx_vshuf_b(base64_tbl3, base64_tbl2,
-                                         __lsx_vsub_b(input1, __lsx_vldi(32)));
-    __m128i input1_mask = __lsx_vslei_bu(input1, 31);
-    __m128i input1_result =
-        __lsx_vbitsel_v(input1_shuf1, input1_shuf0, input1_mask);
-    __lsx_vst(input1_result, reinterpret_cast<__m128i *>(out), 0);
-    out += 16;
-
     __m128i input2 = __lsx_vor_v(t1_2, t3_2);
-    __m128i input2_shuf0 = __lsx_vshuf_b(base64_tbl1, base64_tbl0, input2);
-    __m128i input2_shuf1 = __lsx_vshuf_b(base64_tbl3, base64_tbl2,
-                                         __lsx_vsub_b(input2, __lsx_vldi(32)));
-    __m128i input2_mask = __lsx_vslei_bu(input2, 31);
-    __m128i input2_result =
-        __lsx_vbitsel_v(input2_shuf1, input2_shuf0, input2_mask);
-    __lsx_vst(input2_result, reinterpret_cast<__m128i *>(out), 0);
-    out += 16;
-
     __m128i input3 = __lsx_vor_v(t1_3, t3_3);
-    __m128i input3_shuf0 = __lsx_vshuf_b(base64_tbl1, base64_tbl0, input3);
-    __m128i input3_shuf1 = __lsx_vshuf_b(base64_tbl3, base64_tbl2,
-                                         __lsx_vsub_b(input3, __lsx_vldi(32)));
-    __m128i input3_mask = __lsx_vslei_bu(input3, 31);
-    __m128i input3_result =
-        __lsx_vbitsel_v(input3_shuf1, input3_shuf0, input3_mask);
-    __lsx_vst(input3_result, reinterpret_cast<__m128i *>(out), 0);
-    out += 16;
+
+    const __m128i t0 = lookup_base64(input0, base64_tbl0, base64_tbl1,
+                                     base64_tbl2, base64_tbl3);
+    const __m128i t1 = lookup_base64(input1, base64_tbl0, base64_tbl1,
+                                     base64_tbl2, base64_tbl3);
+    const __m128i t2 = lookup_base64(input2, base64_tbl0, base64_tbl1,
+                                     base64_tbl2, base64_tbl3);
+    const __m128i t3 = lookup_base64(input3, base64_tbl0, base64_tbl1,
+                                     base64_tbl2, base64_tbl3);
+
+    if (use_lines) {
+      if (line_length >= 64) { // fast path
+        if (offset + 64 > line_length) {
+          // exactly one line feed falls within these 64 bytes
+          size_t location_end = line_length - offset;
+          size_t to_move = 64 - location_end;
+          if (location_end < 16) {
+            store_with_line_feed16(out, t0, location_end);
+            out += 17;
+          } else {
+            __lsx_vst(t0, out, 0);
+            out += 16;
+          }
+          if (location_end >= 16 && location_end < 32) {
+            store_with_line_feed16(out, t1, location_end - 16);
+            out += 17;
+          } else {
+            __lsx_vst(t1, out, 0);
+            out += 16;
+          }
+          if (location_end >= 32 && location_end < 48) {
+            store_with_line_feed16(out, t2, location_end - 32);
+            out += 17;
+          } else {
+            __lsx_vst(t2, out, 0);
+            out += 16;
+          }
+          if (location_end >= 48) {
+            store_with_line_feed16(out, t3, location_end - 48);
+            out += 17;
+          } else {
+            __lsx_vst(t3, out, 0);
+            out += 16;
+          }
+          offset = to_move;
+        } else {
+          __lsx_vst(t0, out, 0);
+          __lsx_vst(t1, out, 16);
+          __lsx_vst(t2, out, 32);
+          __lsx_vst(t3, out, 48);
+          offset += 64;
+          out += 64;
+        }
+      } else { // slow path
+        // could be optimized
+        alignas(64) uint8_t buffer[64];
+        __lsx_vst(t0, buffer, 0);
+        __lsx_vst(t1, buffer, 16);
+        __lsx_vst(t2, buffer, 32);
+        __lsx_vst(t3, buffer, 48);
+        size_t out_pos = 0;
+        size_t local_offset = offset;
+        for (size_t j = 0; j < 64;) {
+          if (local_offset == line_length) {
+            out[out_pos++] = '\n';
+            local_offset = 0;
+          }
+          out[out_pos++] = buffer[j++];
+          local_offset++;
+        }
+        offset = local_offset;
+        out += out_pos;
+      }
+    } else {
+      __lsx_vst(t0, out, 0);
+      __lsx_vst(t1, out, 16);
+      __lsx_vst(t2, out, 32);
+      __lsx_vst(t3, out, 48);
+      out += 64;
+    }
   }
   for (; i + 16 <= srclen; i += 12) {
 
@@ -163,19 +259,54 @@ size_t encode_base64(char *dst, const char *src, size_t srclen,
     // res   = [00dddddd|00cccccc|00bbbbbb|00aaaaaa] = t1 | t3
     __m128i indices = __lsx_vor_v(t1, t3);
 
-    __m128i indices_shuf0 = __lsx_vshuf_b(base64_tbl1, base64_tbl0, indices);
-    __m128i indices_shuf1 = __lsx_vshuf_b(
-        base64_tbl3, base64_tbl2, __lsx_vsub_b(indices, __lsx_vldi(32)));
-    __m128i indices_mask = __lsx_vslei_bu(indices, 31);
-    __m128i indices_result =
-        __lsx_vbitsel_v(indices_shuf1, indices_shuf0, indices_mask);
+    const __m128i T0 = lookup_base64(indices, base64_tbl0, base64_tbl1,
+                                     base64_tbl2, base64_tbl3);
 
-    __lsx_vst(indices_result, reinterpret_cast<__m128i *>(out), 0);
-    out += 16;
+    if (use_lines) {
+      if (line_length >= 16) { // fast path
+        if (offset + 16 > line_length) {
+          size_t location_end = line_length - offset;
+          size_t to_move = 16 - location_end;
+          store_with_line_feed16(out, T0, location_end);
+          offset = to_move;
+          out += 16 + 1;
+        } else {
+          __lsx_vst(T0, out, 0);
+          offset += 16;
+          out += 16;
+        }
+      } else { // slow path
+        // could be optimized
+        alignas(16) uint8_t buffer[16];
+        __lsx_vst(T0, buffer, 0);
+        size_t out_pos = 0;
+        size_t local_offset = offset;
+        for (size_t j = 0; j < 16;) {
+          if (local_offset == line_length) {
+            out[out_pos++] = '\n';
+            local_offset = 0;
+          }
+          out[out_pos++] = buffer[j++];
+          local_offset++;
+        }
+        offset = local_offset;
+        out += out_pos;
+      }
+    } else {
+      __lsx_vst(T0, out, 0);
+      out += 16;
+    }
   }
 
-  return i / 3 * 4 + scalar::base64::tail_encode_base64((char *)out, src + i,
-                                                        srclen - i, options);
+  return ((char *)out - (char *)dst) +
+         scalar::base64::tail_encode_base64_impl<use_lines>(
+             (char *)out, src + i, srclen - i, options, line_length, offset);
+}
+
+template <bool isbase64url>
+size_t encode_base64(char *dst, const char *src, size_t srclen,
+                     base64_options options) {
+  return encode_base64_impl<isbase64url, false>(dst, src, srclen, options);
 }
 
 static inline void compress(__m128i data, uint16_t mask, char *output) {
@@ -457,6 +588,19 @@ static inline void load_block(block64 *b, const char16_t *src) {
   b->chunks[3] = __lsx_vssrlni_bu_h(m8, m7, 0);
 }
 
+static inline uint64_t equal_sign_mask(const block64 &b) {
+  const __m128i equal = __lsx_vrepli_b('=');
+  const uint64_t m0 =
+      __lsx_vpickve2gr_hu(__lsx_vmskltz_b(__lsx_vseq_b(b.chunks[0], equal)), 0);
+  const uint64_t m1 =
+      __lsx_vpickve2gr_hu(__lsx_vmskltz_b(__lsx_vseq_b(b.chunks[1], equal)), 0);
+  const uint64_t m2 =
+      __lsx_vpickve2gr_hu(__lsx_vmskltz_b(__lsx_vseq_b(b.chunks[2], equal)), 0);
+  const uint64_t m3 =
+      __lsx_vpickve2gr_hu(__lsx_vmskltz_b(__lsx_vseq_b(b.chunks[3], equal)), 0);
+  return m0 | (m1 << 16) | (m2 << 32) | (m3 << 48);
+}
+
 static inline void base64_decode(char *out, __m128i str) {
   __m128i t0 = __lsx_vor_v(
       __lsx_vslli_w(str, 26),
@@ -506,20 +650,23 @@ compress_decode_base64(char *dst, const char_type *src, size_t srclen,
       default_or_url ? tables::base64::to_base64_default_or_url_value
                      : (base64_url ? tables::base64::to_base64_url_value
                                    : tables::base64::to_base64_value);
-  auto ri = simdutf::scalar::base64::find_end(src, srclen, options);
+  auto ri =
+      ignore_garbage
+          ? simdutf::scalar::base64::reduced_input{0, srclen, srclen, srclen}
+          : simdutf::scalar::base64::find_end(src, srclen, options);
   size_t equallocation = ri.equallocation;
   size_t equalsigns = ri.equalsigns;
   srclen = ri.srclen;
   size_t full_input_length = ri.full_input_length;
   if (srclen == 0) {
     if (!ignore_garbage && equalsigns > 0) {
-      return {INVALID_BASE64_CHARACTER, equallocation, 0};
+      return {INVALID_BASE64_CHARACTER, equallocation, 0, true};
     }
     return {SUCCESS, full_input_length, 0};
   }
   const char_type *const srcinit = src;
   const char *const dstinit = dst;
-  const char_type *const srcend = src + srclen;
+  const char_type *srcend = src + srclen;
 
   constexpr size_t block_size = 10;
   char buffer[block_size * 64];
@@ -529,6 +676,7 @@ compress_decode_base64(char *dst, const char_type *src, size_t srclen,
     while (src <= srcend64) {
       block64 b;
       load_block(&b, src);
+      const block64 raw = b;
       src += 64;
       bool error = false;
       uint64_t badcharmask =
@@ -548,6 +696,24 @@ compress_decode_base64(char *dst, const char_type *src, size_t srclen,
         }
       }
 
+      if (ignore_garbage && badcharmask != 0) {
+        const uint64_t equals = equal_sign_mask(raw);
+        if (equals != 0) {
+          const size_t offset = trailing_zeroes(equals);
+          equallocation = size_t(src - 64 - srcinit) + offset;
+          equalsigns = 1;
+          srclen = equallocation;
+          full_input_length = equallocation + 1;
+          if (srclen == 0) {
+            return {SUCCESS, full_input_length, 0};
+          }
+          srcend = srcinit + srclen;
+          src = srcend;
+          bufferptr += compress_block(
+              &b, badcharmask | (~uint64_t(0) << offset), bufferptr);
+          break;
+        }
+      }
       if (badcharmask != 0) {
         if (is_power_of_two(badcharmask)) {
           bufferptr += compress_block_single(&b, badcharmask, bufferptr);
@@ -571,6 +737,22 @@ compress_decode_base64(char *dst, const char_type *src, size_t srclen,
       }
     }
   }
+  if (ignore_garbage && equalsigns == 0) {
+    const char_type *equal = src;
+    while (equal < srcend && *equal != '=') {
+      equal++;
+    }
+    if (equal < srcend) {
+      equallocation = size_t(equal - srcinit);
+      equalsigns = 1;
+      srclen = equallocation;
+      full_input_length = equallocation + 1;
+      if (srclen == 0) {
+        return {SUCCESS, full_input_length, 0};
+      }
+      srcend = equal;
+    }
+  }
   char *buffer_start = buffer;
   // Optimization note: if this is almost full, then it is worth our
   // time, otherwise, we should just decode directly.
@@ -584,7 +766,7 @@ compress_decode_base64(char *dst, const char_type *src, size_t srclen,
         return {error_code::INVALID_BASE64_CHARACTER, size_t(src - srcinit),
                 size_t(dst - dstinit)};
       }
-      bufferptr += (val <= 63);
+      bufferptr += (val <= 63 && scalar::base64::is_eight_byte(*src));
       src++;
     }
   }
@@ -602,7 +784,7 @@ compress_decode_base64(char *dst, const char_type *src, size_t srclen,
                         << 8;
       // lsx is little-endian
       triple = scalar::u32_swap_bytes(triple);
-      std::memcpy(dst, &triple, 4);
+      std::memcpy(dst, &triple, 3);
 
       dst += 3;
       buffer_start += 4;
@@ -629,7 +811,8 @@ compress_decode_base64(char *dst, const char_type *src, size_t srclen,
           src--;
         }
       } else {
-        while (to_base64[uint8_t(*(src - 1))] >= 64) {
+        while (!scalar::base64::is_eight_byte(*(src - 1)) ||
+               to_base64[uint8_t(*(src - 1))] >= 64) {
           src--;
         }
       }
@@ -668,8 +851,9 @@ compress_decode_base64(char *dst, const char_type *src, size_t srclen,
   if (equalsigns > 0 && !ignore_garbage) {
     if ((size_t(dst - dstinit) % 3 == 0) ||
         ((size_t(dst - dstinit) % 3) + 1 + equalsigns != 4)) {
-      return {INVALID_BASE64_CHARACTER, equallocation, size_t(dst - dstinit)};
+      return {INVALID_BASE64_CHARACTER, equallocation, size_t(dst - dstinit),
+              true};
     }
   }
-  return {SUCCESS, srclen, size_t(dst - dstinit)};
+  return {SUCCESS, full_input_length, size_t(dst - dstinit)};
 }

@@ -3,7 +3,6 @@
 #if !defined(SIMDUTF_NO_THREADS)
   #include <atomic>
 #endif
-#include <string>
 #ifdef SIMDUTF_INTERNAL_TESTS
   #include <vector>
 #endif
@@ -13,14 +12,13 @@
 #include "simdutf/error.h"
 #include "simdutf/internal/isadetection.h"
 
+#include <string_view>
 #if SIMDUTF_SPAN
   #include <concepts>
   #include <type_traits>
   #include <span>
   #include <tuple>
-#endif
-#if SIMDUTF_CPLUSPLUS17
-  #include <string_view>
+  #include <utility> // for std::unreachable
 #endif
 // The following defines are conditionally enabled/disabled during amalgamation.
 // By default all features are enabled, regular code shouldn't check them. Only
@@ -31,13 +29,41 @@
 //      #   error("Please amalgamate simdutf with UTF-16 support")
 //      #endif
 //
-#define SIMDUTF_FEATURE_DETECT_ENCODING 1
-#define SIMDUTF_FEATURE_ASCII 1
-#define SIMDUTF_FEATURE_LATIN1 1
-#define SIMDUTF_FEATURE_UTF8 1
-#define SIMDUTF_FEATURE_UTF16 1
-#define SIMDUTF_FEATURE_UTF32 1
-#define SIMDUTF_FEATURE_BASE64 1
+#ifndef SIMDUTF_FEATURE_DETECT_ENCODING
+  #define SIMDUTF_FEATURE_DETECT_ENCODING 1
+#endif
+#ifndef SIMDUTF_FEATURE_ASCII
+  #define SIMDUTF_FEATURE_ASCII 1
+#endif
+#ifndef SIMDUTF_FEATURE_LATIN1
+  #define SIMDUTF_FEATURE_LATIN1 1
+#endif
+#ifndef SIMDUTF_FEATURE_UTF8
+  #define SIMDUTF_FEATURE_UTF8 1
+#endif
+#ifndef SIMDUTF_FEATURE_UTF16
+  #define SIMDUTF_FEATURE_UTF16 1
+#endif
+#ifndef SIMDUTF_FEATURE_UTF32
+  #define SIMDUTF_FEATURE_UTF32 1
+#endif
+#ifndef SIMDUTF_FEATURE_BASE64
+  #define SIMDUTF_FEATURE_BASE64 1
+#endif
+
+/// helpers placed in namespace detail are not a part of the public API
+namespace simdutf {
+namespace detail {
+namespace {
+// this is to avoid including <algorithm> just for min
+constexpr std::size_t min(std::size_t a, std::size_t b) {
+  return a < b ? a : b;
+}
+template <typename T, typename U>
+constexpr std::size_t min(const T &a, const U &b) = delete;
+} // namespace
+} // namespace detail
+} // namespace simdutf
 
 #if SIMDUTF_CPLUSPLUS23
   #include <simdutf/constexpr_ptr.h>
@@ -89,6 +115,42 @@ concept output_span_of_byte_like = requires(T &t) {
   { *t.data() } noexcept -> is_byte_like;
   { *t.data() } noexcept -> is_mutable;
 };
+
+  #if SIMDUTF_CPLUSPLUS23
+// Give the scalar base64 code a char copy of a non-char span (constexpr only).
+template <typename F> constexpr auto with_char_input(const auto &input, F &&f) {
+  using T = std::remove_cvref_t<decltype(*input.data())>;
+  if constexpr (std::is_same_v<T, char>) {
+    return f(input.data());
+  } else {
+    char *copy = new char[input.size()];
+    for (std::size_t i = 0; i < input.size(); i++) {
+      copy[i] = static_cast<char>(input.data()[i]);
+    }
+    auto r = f(static_cast<const char *>(copy));
+    delete[] copy;
+    return r;
+  }
+}
+
+// Copy back only the written(r) bytes, leaving the rest of the output alone.
+template <typename F, typename W>
+constexpr auto with_char_output(auto &&output, F &&f, W &&written) {
+  using T = std::remove_cvref_t<decltype(*output.data())>;
+  if constexpr (std::is_same_v<T, char>) {
+    return f(output.data());
+  } else {
+    char *copy = new char[output.size()];
+    auto r = f(copy);
+    const std::size_t n = written(r);
+    for (std::size_t i = 0; i < n; i++) {
+      output.data()[i] = static_cast<T>(copy[i]);
+    }
+    delete[] copy;
+    return r;
+  }
+}
+  #endif // SIMDUTF_CPLUSPLUS23
 
 /**
  * a pointer like object, when indexed, results in a byte like result.
@@ -152,6 +214,7 @@ concept indexes_into_uint32 = requires(InputPtr p) {
 #include <simdutf/scalar/utf8_to_latin1/utf8_to_latin1.h>
 #include <simdutf/scalar/utf8_to_latin1/valid_utf8_to_latin1.h>
 #include <simdutf/scalar/utf8_to_utf16/utf8_to_utf16.h>
+#include <simdutf/scalar/utf8_to_utf16/utf8_to_utf16_with_replacement.h>
 #include <simdutf/scalar/utf8_to_utf16/valid_utf8_to_utf16.h>
 #include <simdutf/scalar/utf8_to_utf32/utf8_to_utf32.h>
 #include <simdutf/scalar/utf8_to_utf32/valid_utf8_to_utf32.h>
@@ -281,6 +344,45 @@ validate_utf8_with_errors(
     #endif
   {
     return validate_utf8_with_errors(
+        reinterpret_cast<const char *>(input.data()), input.size());
+  }
+}
+  #endif // SIMDUTF_SPAN
+#endif   // SIMDUTF_FEATURE_UTF8
+
+#if SIMDUTF_FEATURE_UTF8
+/**
+ * Validate the UTF-8 string and stop on error, while counting the number of
+ * continuation bytes and of four-byte sequences in the valid prefix.
+ *
+ * Overridden by each implementation.
+ *
+ * These two counts are enough to derive, without a second pass over the input,
+ * both the number of code points (input_count - continuation_count) and the
+ * number of UTF-16 code units (input_count - continuation_count +
+ * four_byte_count) of the valid prefix. The utf32_length() and utf16_length()
+ * helpers return them.
+ *
+ * @param buf the UTF-8 string to validate.
+ * @param len the length of the string in bytes.
+ * @return a utf8_result struct with an error code, the number of bytes in the
+ * valid prefix (input_count), and the counts of continuation bytes and of
+ * four-byte sequences within it.
+ */
+simdutf_warn_unused utf8_result validate_utf8_with_counts(const char *buf,
+                                                          size_t len) noexcept;
+  #if SIMDUTF_SPAN
+simdutf_really_inline simdutf_constexpr23 simdutf_warn_unused utf8_result
+validate_utf8_with_counts(
+    const detail::input_span_of_byte_like auto &input) noexcept {
+    #if SIMDUTF_CPLUSPLUS23
+  if consteval {
+    return scalar::utf8::validate_with_counts(
+        detail::constexpr_cast_ptr<uint8_t>(input.data()), input.size());
+  } else
+    #endif
+  {
+    return validate_utf8_with_counts(
         reinterpret_cast<const char *>(input.data()), input.size());
   }
 }
@@ -832,6 +934,12 @@ convert_latin1_to_utf8(
  *
  * We write as many characters as possible.
  *
+ * Using convert_latin1_to_utf8_safe instead of convert_latin1_to_utf8 comes
+ * with a significant penalty in some cases, being up to four times slower,
+ * especially on short inputs. If you have allocated the output buffer so that
+ * it contains utf8_length_from_latin1(input, length) bytes, then prefer
+ * convert_latin1_to_utf8.
+ *
  * @param input         the Latin1 string to convert
  * @param length        the length of the string in bytes
  * @param utf8_output  	the pointer to buffer that can hold conversion result
@@ -865,6 +973,41 @@ convert_latin1_to_utf8_safe(
   }
 }
   #endif // SIMDUTF_SPAN
+
+/**
+ * Convert a Latin1 string into a size-limited UTF-8 buffer and report how much
+ * input was consumed and output was written.
+ *
+ * We write as many complete characters as possible. The returned error is
+ * SUCCESS if all input was consumed, or OUTPUT_BUFFER_TOO_SMALL otherwise.
+ *
+ * @param input         the Latin1 string to convert
+ * @param length        the length of the string in bytes
+ * @param utf8_output   the pointer to the output buffer
+ * @param utf8_len      the maximum output length
+ * @return a full_result with error, input_count and output_count
+ */
+simdutf_warn_unused full_result convert_latin1_to_utf8_safe_with_details(
+    const char *input, size_t length, char *utf8_output,
+    size_t utf8_len) noexcept;
+  #if SIMDUTF_SPAN
+simdutf_really_inline simdutf_warn_unused simdutf_constexpr23 full_result
+convert_latin1_to_utf8_safe_with_details(
+    const detail::input_span_of_byte_like auto &input,
+    detail::output_span_of_byte_like auto &&utf8_output) noexcept {
+    #if SIMDUTF_CPLUSPLUS23
+  if consteval {
+    return scalar::latin1_to_utf8::convert_safe_with_details_constexpr(
+        input.data(), input.size(), utf8_output.data(), utf8_output.size());
+  } else
+    #endif
+  {
+    return convert_latin1_to_utf8_safe_with_details(
+        reinterpret_cast<const char *>(input.data()), input.size(),
+        reinterpret_cast<char *>(utf8_output.data()), utf8_output.size());
+  }
+}
+  #endif // SIMDUTF_SPAN
 #endif   // SIMDUTF_FEATURE_UTF8 && SIMDUTF_FEATURE_LATIN1
 
 #if SIMDUTF_FEATURE_UTF16 && SIMDUTF_FEATURE_LATIN1
@@ -875,7 +1018,7 @@ convert_latin1_to_utf8_safe(
  *
  * @param input         the Latin1 string to convert
  * @param length        the length of the string in bytes
- * @param utf16_buffer  the pointer to buffer that can hold conversion result
+ * @param utf16_output  the pointer to buffer that can hold conversion result
  * @return the number of written char16_t; 0 if conversion is not possible
  */
 simdutf_warn_unused size_t convert_latin1_to_utf16le(
@@ -906,7 +1049,7 @@ convert_latin1_to_utf16le(
  *
  * @param input         the Latin1 string to convert
  * @param length        the length of the string in bytes
- * @param utf16_buffer  the pointer to buffer that can hold conversion result
+ * @param utf16_output  the pointer to buffer that can hold conversion result
  * @return the number of written char16_t; 0 if conversion is not possible
  */
 simdutf_warn_unused size_t convert_latin1_to_utf16be(
@@ -1034,7 +1177,7 @@ convert_utf8_to_latin1(
  *
  * @param input         the UTF-8 string to convert
  * @param length        the length of the string in bytes
- * @param utf16_buffer  the pointer to buffer that can hold conversion result
+ * @param utf16_output  the pointer to buffer that can hold conversion result
  * @return the number of written char16_t; 0 if the input was not valid UTF-8
  * string
  */
@@ -1137,7 +1280,7 @@ utf8_length_from_utf16be_with_replacement(
  *
  * @param input         the Latin1 string to convert
  * @param length        the length of the string in bytes
- * @param utf16_buffer  the pointer to buffer that can hold conversion result
+ * @param utf16_output  the pointer to buffer that can hold conversion result
  * @return the number of written char16_t.
  */
 simdutf_warn_unused size_t convert_latin1_to_utf16(
@@ -1169,7 +1312,7 @@ convert_latin1_to_utf16(const detail::input_span_of_byte_like auto &input,
  *
  * @param input         the UTF-8 string to convert
  * @param length        the length of the string in bytes
- * @param utf16_buffer  the pointer to buffer that can hold conversion result
+ * @param utf16_output  the pointer to buffer that can hold conversion result
  * @return the number of written char16_t; 0 if the input was not valid UTF-8
  * string
  */
@@ -1201,7 +1344,7 @@ convert_utf8_to_utf16le(const detail::input_span_of_byte_like auto &utf8_input,
  *
  * @param input         the UTF-8 string to convert
  * @param length        the length of the string in bytes
- * @param utf16_buffer  the pointer to buffer that can hold conversion result
+ * @param utf16_output  the pointer to buffer that can hold conversion result
  * @return the number of written char16_t; 0 if the input was not valid UTF-8
  * string
  */
@@ -1276,7 +1419,7 @@ convert_utf8_to_latin1_with_errors(
  *
  * @param input         the UTF-8 string to convert
  * @param length        the length of the string in bytes
- * @param utf16_buffer  the pointer to buffer that can hold conversion result
+ * @param utf16_output  the pointer to buffer that can hold conversion result
  * @return a result pair struct (of type simdutf::result containing the two
  * fields error and count) with an error code and either position of the error
  * (in the input in code units) if any, or the number of char16_t written if
@@ -1311,7 +1454,7 @@ convert_utf8_to_utf16_with_errors(
  *
  * @param input         the UTF-8 string to convert
  * @param length        the length of the string in bytes
- * @param utf16_buffer  the pointer to buffer that can hold conversion result
+ * @param utf16_output  the pointer to buffer that can hold conversion result
  * @return a result pair struct (of type simdutf::result containing the two
  * fields error and count) with an error code and either position of the error
  * (in the input in code units) if any, or the number of char16_t written if
@@ -1346,7 +1489,7 @@ convert_utf8_to_utf16le_with_errors(
  *
  * @param input         the UTF-8 string to convert
  * @param length        the length of the string in bytes
- * @param utf16_buffer  the pointer to buffer that can hold conversion result
+ * @param utf16_output  the pointer to buffer that can hold conversion result
  * @return a result pair struct (of type simdutf::result containing the two
  * fields error and count) with an error code and either position of the error
  * (in the input in code units) if any, or the number of char16_t written if
@@ -1372,6 +1515,242 @@ convert_utf8_to_utf16be_with_errors(
   }
 }
   #endif // SIMDUTF_SPAN
+
+/**
+ * Convert a possibly ill-formed UTF-8 string into a UTF-16 string (native
+ * endianness), replacing each ill-formed subsequence with U+FFFD.
+ *
+ * Substitution follows Unicode maximal subparts (the WHATWG rule): each
+ * maximal subpart of an ill-formed sequence becomes one U+FFFD code unit.
+ * The function always succeeds. The output buffer must hold
+ * utf16_length_from_utf8_with_replacement(...).count char16_t. A buffer of
+ * `length` char16_t is always large enough. Pass that result to the overload
+ * that takes it, so the recorded error locations are not discovered again.
+ *
+ * This function is not BOM-aware.
+ *
+ * @param input         the UTF-8 string to convert
+ * @param length        the length of the string in bytes
+ * @param utf16_output  the pointer to buffer that can hold the conversion
+ * result
+ * @return the number of written char16_t
+ */
+simdutf_warn_unused size_t convert_utf8_to_utf16_with_replacement(
+    const char *input, size_t length, char16_t *utf16_output) noexcept;
+  #if SIMDUTF_SPAN
+simdutf_really_inline simdutf_warn_unused simdutf_constexpr23 size_t
+convert_utf8_to_utf16_with_replacement(
+    const detail::input_span_of_byte_like auto &utf8_input,
+    std::span<char16_t> utf16_output) noexcept {
+    #if SIMDUTF_CPLUSPLUS23
+  if consteval {
+    return scalar::utf8_to_utf16::convert_with_replacement<endianness::NATIVE>(
+        utf8_input.data(), utf8_input.size(), utf16_output.data());
+  } else
+    #endif
+  {
+    return convert_utf8_to_utf16_with_replacement(
+        reinterpret_cast<const char *>(utf8_input.data()), utf8_input.size(),
+        utf16_output.data());
+  }
+}
+  #endif // SIMDUTF_SPAN
+
+/**
+ * Convert a possibly ill-formed UTF-8 string into a UTF-16 string (native
+ * endianness), replacing each ill-formed subsequence with U+FFFD, using error
+ * locations already computed for this same input.
+ *
+ * locations must be the value returned by
+ * utf16_length_from_utf8_with_replacement for these bytes. When
+ * locations.more_errors is false, every ill-formed subsequence is in
+ * locations.error_offset and the gaps are valid UTF-8. When it is true, the
+ * input has further ill-formed subsequences, and the tail past the stored
+ * locations is scanned during conversion. The function always succeeds.
+ *
+ * @param input         the UTF-8 string to convert
+ * @param length        the length of the string in bytes
+ * @param utf16_output  the pointer to buffer that can hold the conversion
+ * result
+ * @param locations     result of utf16_length_from_utf8_with_replacement
+ * @return the number of written char16_t, equal to locations.count when
+ * locations describes this input
+ */
+simdutf_warn_unused size_t convert_utf8_to_utf16_with_replacement(
+    const char *input, size_t length, char16_t *utf16_output,
+    const utf8_to_utf16_result &locations) noexcept;
+  #if SIMDUTF_SPAN
+simdutf_really_inline simdutf_warn_unused simdutf_constexpr23 size_t
+convert_utf8_to_utf16_with_replacement(
+    const detail::input_span_of_byte_like auto &utf8_input,
+    std::span<char16_t> utf16_output,
+    const utf8_to_utf16_result &locations) noexcept {
+    #if SIMDUTF_CPLUSPLUS23
+  if consteval {
+    (void)locations;
+    return scalar::utf8_to_utf16::convert_with_replacement<endianness::NATIVE>(
+        utf8_input.data(), utf8_input.size(), utf16_output.data());
+  } else
+    #endif
+  {
+    return convert_utf8_to_utf16_with_replacement(
+        reinterpret_cast<const char *>(utf8_input.data()), utf8_input.size(),
+        utf16_output.data(), locations);
+  }
+}
+  #endif // SIMDUTF_SPAN
+
+/**
+ * Convert a possibly ill-formed UTF-8 string into a UTF-16LE string, replacing
+ * each ill-formed subsequence with U+FFFD.
+ *
+ * Substitution follows Unicode maximal subparts (the WHATWG rule): each
+ * maximal subpart of an ill-formed sequence becomes one U+FFFD code unit.
+ * The function always succeeds. The output buffer must hold
+ * utf16_length_from_utf8_with_replacement(...).count char16_t. A buffer of
+ * `length` char16_t is always large enough. Pass that result to the overload
+ * that takes it, so the recorded error locations are not discovered again.
+ *
+ * This function is not BOM-aware.
+ *
+ * @param input         the UTF-8 string to convert
+ * @param length        the length of the string in bytes
+ * @param utf16_output  the pointer to buffer that can hold the conversion
+ * result
+ * @return the number of written char16_t
+ */
+simdutf_warn_unused size_t convert_utf8_to_utf16le_with_replacement(
+    const char *input, size_t length, char16_t *utf16_output) noexcept;
+  #if SIMDUTF_SPAN
+simdutf_really_inline simdutf_warn_unused simdutf_constexpr23 size_t
+convert_utf8_to_utf16le_with_replacement(
+    const detail::input_span_of_byte_like auto &utf8_input,
+    std::span<char16_t> utf16_output) noexcept {
+    #if SIMDUTF_CPLUSPLUS23
+  if consteval {
+    return scalar::utf8_to_utf16::convert_with_replacement<endianness::LITTLE>(
+        utf8_input.data(), utf8_input.size(), utf16_output.data());
+  } else
+    #endif
+  {
+    return convert_utf8_to_utf16le_with_replacement(
+        reinterpret_cast<const char *>(utf8_input.data()), utf8_input.size(),
+        utf16_output.data());
+  }
+}
+  #endif // SIMDUTF_SPAN
+
+/**
+ * Convert a possibly ill-formed UTF-8 string into a UTF-16LE string, using
+ * error locations already computed for this same input. See
+ * convert_utf8_to_utf16_with_replacement.
+ *
+ * @param input         the UTF-8 string to convert
+ * @param length        the length of the string in bytes
+ * @param utf16_output  the pointer to buffer that can hold the conversion
+ * result
+ * @param locations     result of utf16_length_from_utf8_with_replacement
+ * @return the number of written char16_t
+ */
+simdutf_warn_unused size_t convert_utf8_to_utf16le_with_replacement(
+    const char *input, size_t length, char16_t *utf16_output,
+    const utf8_to_utf16_result &locations) noexcept;
+  #if SIMDUTF_SPAN
+simdutf_really_inline simdutf_warn_unused simdutf_constexpr23 size_t
+convert_utf8_to_utf16le_with_replacement(
+    const detail::input_span_of_byte_like auto &utf8_input,
+    std::span<char16_t> utf16_output,
+    const utf8_to_utf16_result &locations) noexcept {
+    #if SIMDUTF_CPLUSPLUS23
+  if consteval {
+    (void)locations;
+    return scalar::utf8_to_utf16::convert_with_replacement<endianness::LITTLE>(
+        utf8_input.data(), utf8_input.size(), utf16_output.data());
+  } else
+    #endif
+  {
+    return convert_utf8_to_utf16le_with_replacement(
+        reinterpret_cast<const char *>(utf8_input.data()), utf8_input.size(),
+        utf16_output.data(), locations);
+  }
+}
+  #endif // SIMDUTF_SPAN
+
+/**
+ * Convert a possibly ill-formed UTF-8 string into a UTF-16BE string, replacing
+ * each ill-formed subsequence with U+FFFD.
+ *
+ * Substitution follows Unicode maximal subparts (the WHATWG rule): each
+ * maximal subpart of an ill-formed sequence becomes one U+FFFD code unit.
+ * The function always succeeds. The output buffer must hold
+ * utf16_length_from_utf8_with_replacement(...).count char16_t. A buffer of
+ * `length` char16_t is always large enough. Pass that result to the overload
+ * that takes it, so the recorded error locations are not discovered again.
+ *
+ * This function is not BOM-aware.
+ *
+ * @param input         the UTF-8 string to convert
+ * @param length        the length of the string in bytes
+ * @param utf16_output  the pointer to buffer that can hold the conversion
+ * result
+ * @return the number of written char16_t
+ */
+simdutf_warn_unused size_t convert_utf8_to_utf16be_with_replacement(
+    const char *input, size_t length, char16_t *utf16_output) noexcept;
+  #if SIMDUTF_SPAN
+simdutf_really_inline simdutf_warn_unused simdutf_constexpr23 size_t
+convert_utf8_to_utf16be_with_replacement(
+    const detail::input_span_of_byte_like auto &utf8_input,
+    std::span<char16_t> utf16_output) noexcept {
+    #if SIMDUTF_CPLUSPLUS23
+  if consteval {
+    return scalar::utf8_to_utf16::convert_with_replacement<endianness::BIG>(
+        utf8_input.data(), utf8_input.size(), utf16_output.data());
+  } else
+    #endif
+  {
+    return convert_utf8_to_utf16be_with_replacement(
+        reinterpret_cast<const char *>(utf8_input.data()), utf8_input.size(),
+        utf16_output.data());
+  }
+}
+  #endif // SIMDUTF_SPAN
+
+/**
+ * Convert a possibly ill-formed UTF-8 string into a UTF-16BE string, using
+ * error locations already computed for this same input. See
+ * convert_utf8_to_utf16_with_replacement.
+ *
+ * @param input         the UTF-8 string to convert
+ * @param length        the length of the string in bytes
+ * @param utf16_output  the pointer to buffer that can hold the conversion
+ * result
+ * @param locations     result of utf16_length_from_utf8_with_replacement
+ * @return the number of written char16_t
+ */
+simdutf_warn_unused size_t convert_utf8_to_utf16be_with_replacement(
+    const char *input, size_t length, char16_t *utf16_output,
+    const utf8_to_utf16_result &locations) noexcept;
+  #if SIMDUTF_SPAN
+simdutf_really_inline simdutf_warn_unused simdutf_constexpr23 size_t
+convert_utf8_to_utf16be_with_replacement(
+    const detail::input_span_of_byte_like auto &utf8_input,
+    std::span<char16_t> utf16_output,
+    const utf8_to_utf16_result &locations) noexcept {
+    #if SIMDUTF_CPLUSPLUS23
+  if consteval {
+    (void)locations;
+    return scalar::utf8_to_utf16::convert_with_replacement<endianness::BIG>(
+        utf8_input.data(), utf8_input.size(), utf16_output.data());
+  } else
+    #endif
+  {
+    return convert_utf8_to_utf16be_with_replacement(
+        reinterpret_cast<const char *>(utf8_input.data()), utf8_input.size(),
+        utf16_output.data(), locations);
+  }
+}
+  #endif // SIMDUTF_SPAN
 #endif   // SIMDUTF_FEATURE_UTF8 && SIMDUTF_FEATURE_UTF16
 
 #if SIMDUTF_FEATURE_UTF8 && SIMDUTF_FEATURE_UTF32
@@ -1383,7 +1762,7 @@ convert_utf8_to_utf16be_with_errors(
  *
  * @param input         the UTF-8 string to convert
  * @param length        the length of the string in bytes
- * @param utf32_buffer  the pointer to buffer that can hold conversion result
+ * @param utf32_output  the pointer to buffer that can hold conversion result
  * @return the number of written char32_t; 0 if the input was not valid UTF-8
  * string
  */
@@ -1415,7 +1794,7 @@ convert_utf8_to_utf32(const detail::input_span_of_byte_like auto &utf8_input,
  *
  * @param input         the UTF-8 string to convert
  * @param length        the length of the string in bytes
- * @param utf32_buffer  the pointer to buffer that can hold conversion result
+ * @param utf32_output  the pointer to buffer that can hold conversion result
  * @return a result pair struct (of type simdutf::result containing the two
  * fields error and count) with an error code and either position of the error
  * (in the input in code units) if any, or the number of char32_t written if
@@ -1711,6 +2090,57 @@ utf16_length_from_utf8(
   }
 }
   #endif // SIMDUTF_SPAN
+
+/**
+ * Compute the number of char16_t that this UTF-8 string requires in UTF-16
+ * when ill-formed subsequences are replaced by U+FFFD, and record where those
+ * subsequences are.
+ *
+ * Substitution follows Unicode maximal subparts (the WHATWG rule): each
+ * maximal subpart becomes one U+FFFD. count is always the number of char16_t
+ * that convert_utf8_to_utf16_with_replacement writes, and it is at most
+ * `length`. The count does not depend on endianness.
+ *
+ * error is SUCCESS when the input is valid UTF-8. Otherwise it is the error
+ * code of the first ill-formed sequence (HEADER_BITS, TOO_SHORT, TOO_LONG,
+ * OVERLONG, TOO_LARGE, or SURROGATE). count stays correct either way.
+ *
+ * error_offset holds the first error_count byte indexes, at most
+ * utf8_to_utf16_result::max_errors (16), counting from the start of input.
+ * more_errors is true when the input has further ill-formed subsequences.
+ * Pass the whole result to convert_utf8_to_utf16_with_replacement on these
+ * same bytes. A complete list (more_errors false) lets that conversion skip a
+ * second scan.
+ *
+ * When the input is known to be valid, utf16_length_from_utf8 is the faster
+ * length function: it only counts, whereas this one validates.
+ *
+ * This function is not BOM-aware.
+ *
+ * @param input         the UTF-8 string to process
+ * @param length        the length of the string in bytes
+ * @return a utf8_to_utf16_result
+ */
+simdutf_warn_unused utf8_to_utf16_result
+utf16_length_from_utf8_with_replacement(const char *input,
+                                        size_t length) noexcept;
+  #if SIMDUTF_SPAN
+simdutf_really_inline
+    simdutf_warn_unused simdutf_constexpr23 utf8_to_utf16_result
+    utf16_length_from_utf8_with_replacement(
+        const detail::input_span_of_byte_like auto &utf8_input) noexcept {
+    #if SIMDUTF_CPLUSPLUS23
+  if consteval {
+    return scalar::utf8_to_utf16::utf16_length_from_utf8_with_replacement(
+        utf8_input.data(), utf8_input.size());
+  } else
+    #endif
+  {
+    return utf16_length_from_utf8_with_replacement(
+        reinterpret_cast<const char *>(utf8_input.data()), utf8_input.size());
+  }
+}
+  #endif // SIMDUTF_SPAN
 #endif   // SIMDUTF_FEATURE_UTF8 && SIMDUTF_FEATURE_UTF16
 
 #if SIMDUTF_FEATURE_UTF8 && SIMDUTF_FEATURE_UTF32
@@ -1800,6 +2230,11 @@ convert_utf16_to_utf8(
  *
  * This function is not BOM-aware.
  *
+ * Using convert_utf16_to_utf8_safe instead of convert_utf16_to_utf8 comes with
+ * a significant penalty in some cases, being up to three times slower,
+ * especially on short inputs. If you have allocated the output buffer so that
+ * it contains utf8_length_from_utf16(input, length) bytes, then prefer
+ * convert_utf16_to_utf8.
  *
  * @param input         the UTF-16 string to convert
  * @param length        the length of the string in 16-bit code units (char16_t)
@@ -1837,6 +2272,47 @@ convert_utf16_to_utf8_safe(
     #endif
   {
     return convert_utf16_to_utf8_safe(
+        utf16_input.data(), utf16_input.size(),
+        reinterpret_cast<char *>(utf8_output.data()), utf8_output.size());
+  }
+}
+  #endif // SIMDUTF_SPAN
+
+/**
+ * Convert a possibly broken UTF-16 string into a size-limited UTF-8 buffer and
+ * report how much input was consumed and output was written.
+ *
+ * We write as many complete characters as possible while validating the input.
+ * The returned error is SUCCESS if all input was consumed,
+ * OUTPUT_BUFFER_TOO_SMALL if the next character does not fit, or SURROGATE if
+ * an unpaired surrogate was found.
+ *
+ * @param input         the UTF-16 string to convert
+ * @param length        the length in 16-bit code units
+ * @param utf8_output   the pointer to the output buffer
+ * @param utf8_len      the maximum output length
+ * @return a full_result with error, input_count and output_count
+ */
+simdutf_warn_unused full_result convert_utf16_to_utf8_safe_with_details(
+    const char16_t *input, size_t length, char *utf8_output,
+    size_t utf8_len) noexcept;
+  #if SIMDUTF_SPAN
+simdutf_really_inline simdutf_warn_unused simdutf_constexpr23 full_result
+convert_utf16_to_utf8_safe_with_details(
+    std::span<const char16_t> utf16_input,
+    detail::output_span_of_byte_like auto &&utf8_output) noexcept {
+    #if SIMDUTF_CPLUSPLUS23
+  if consteval {
+    if (utf16_input.empty()) {
+      return full_result(error_code::SUCCESS, 0, 0);
+    }
+    return scalar::utf16_to_utf8::convert_with_errors<endianness::NATIVE, true>(
+        utf16_input.data(), utf16_input.size(), utf8_output.data(),
+        utf8_output.size());
+  } else
+    #endif
+  {
+    return convert_utf16_to_utf8_safe_with_details(
         utf16_input.data(), utf16_input.size(),
         reinterpret_cast<char *>(utf8_output.data()), utf8_output.size());
   }
@@ -2355,6 +2831,44 @@ convert_utf16_to_utf8_with_replacement(
     return convert_utf16_to_utf8_with_replacement(
         utf16_input.data(), utf16_input.size(),
         reinterpret_cast<char *>(utf8_output.data()));
+  }
+}
+  #endif // SIMDUTF_SPAN
+
+/**
+ * Convert a possibly broken UTF-16 string into a size-limited UTF-8 buffer,
+ * replacing unpaired surrogates with U+FFFD and reporting how much input was
+ * consumed and output was written.
+ *
+ * We write as many complete characters as possible. The returned error is
+ * SUCCESS if all input was consumed, or OUTPUT_BUFFER_TOO_SMALL if the next
+ * character or replacement does not fit.
+ *
+ * @param input         the UTF-16 string to convert
+ * @param length        the length in 16-bit code units
+ * @param utf8_output   the pointer to the output buffer
+ * @param utf8_len      the maximum output length
+ * @return a full_result with error, input_count and output_count
+ */
+simdutf_warn_unused full_result convert_utf16_to_utf8_with_replacement_safe(
+    const char16_t *input, size_t length, char *utf8_output,
+    size_t utf8_len) noexcept;
+  #if SIMDUTF_SPAN
+simdutf_really_inline simdutf_warn_unused simdutf_constexpr23 full_result
+convert_utf16_to_utf8_with_replacement_safe(
+    std::span<const char16_t> utf16_input,
+    detail::output_span_of_byte_like auto &&utf8_output) noexcept {
+    #if SIMDUTF_CPLUSPLUS23
+  if consteval {
+    return scalar::utf16_to_utf8::convert_with_replacement_safe<
+        endianness::NATIVE>(utf16_input.data(), utf16_input.size(),
+                            utf8_output.data(), utf8_output.size());
+  } else
+    #endif
+  {
+    return convert_utf16_to_utf8_with_replacement_safe(
+        utf16_input.data(), utf16_input.size(),
+        reinterpret_cast<char *>(utf8_output.data()), utf8_output.size());
   }
 }
   #endif // SIMDUTF_SPAN
@@ -4165,7 +4679,6 @@ find(const char16_t *start, const char16_t *end, char16_t character) noexcept {
 
 namespace simdutf {
 
-  #if SIMDUTF_CPLUSPLUS17
 inline std::string_view to_string(base64_options options) {
   switch (options) {
   case base64_default:
@@ -4187,9 +4700,7 @@ inline std::string_view to_string(base64_options options) {
   }
   return "<unknown>";
 }
-  #endif // SIMDUTF_CPLUSPLUS17
 
-  #if SIMDUTF_CPLUSPLUS17
 inline std::string_view to_string(last_chunk_handling_options options) {
   switch (options) {
   case loose:
@@ -4203,7 +4714,6 @@ inline std::string_view to_string(last_chunk_handling_options options) {
   }
   return "<unknown>";
 }
-  #endif
 
 /**
  * Provide the maximal binary length in bytes given the base64 input.
@@ -4290,8 +4800,9 @@ binary_length_from_base64(
     const detail::input_span_of_byte_like auto &input) noexcept {
     #if SIMDUTF_CPLUSPLUS23
   if consteval {
-    return scalar::base64::binary_length_from_base64(input.data(),
-                                                     input.size());
+    return detail::with_char_input(input, [&](auto in) {
+      return scalar::base64::binary_length_from_base64(in, input.size());
+    });
   } else
     #endif
   {
@@ -4400,9 +4911,15 @@ base64_to_binary(
     last_chunk_handling_options last_chunk_options = loose) noexcept {
     #if SIMDUTF_CPLUSPLUS23
   if consteval {
-    return scalar::base64::base64_to_binary_details_impl(
-        input.data(), input.size(), binary_output.data(), options,
-        last_chunk_options);
+    return detail::with_char_input(input, [&](auto in) {
+      return detail::with_char_output(
+          binary_output,
+          [&](char *out) {
+            return scalar::base64::base64_to_binary_details_impl(
+                in, input.size(), out, options, last_chunk_options);
+          },
+          [](const full_result &r) { return r.output_count; });
+    });
   } else
     #endif
   {
@@ -4418,6 +4935,7 @@ base64_to_binary(
  * Provide the base64 length in bytes given the length of a binary input.
  *
  * @param length        the length of the input in bytes
+ * @param options       the base64 options to use (default: base64_default)
  * @return number of base64 bytes
  */
 inline simdutf_warn_unused simdutf_constexpr23 size_t base64_length_from_binary(
@@ -4430,6 +4948,7 @@ inline simdutf_warn_unused simdutf_constexpr23 size_t base64_length_from_binary(
  * taking into account line breaks.
  *
  * @param length        the length of the input in bytes
+ * @param options       the base64 options to use (default: base64_default)
  * @param line_length   the length of lines, must be at least 4 (otherwise it is
  * interpreted as 4),
  * @return number of base64 bytes
@@ -4472,8 +4991,15 @@ binary_to_base64(const detail::input_span_of_byte_like auto &input,
                  base64_options options = base64_default) noexcept {
     #if SIMDUTF_CPLUSPLUS23
   if consteval {
-    return scalar::base64::tail_encode_base64(
-        binary_output.data(), input.data(), input.size(), options);
+    return detail::with_char_input(input, [&](const char *in) {
+      return detail::with_char_output(
+          binary_output,
+          [&](char *out) {
+            return scalar::base64::tail_encode_base64(out, in, input.size(),
+                                                      options);
+          },
+          [](std::size_t n) { return n; });
+    });
   } else
     #endif
   {
@@ -4521,8 +5047,15 @@ binary_to_base64_with_lines(
     base64_options options = base64_default) noexcept {
     #if SIMDUTF_CPLUSPLUS23
   if consteval {
-    return scalar::base64::tail_encode_base64_impl<true>(
-        binary_output.data(), input.data(), input.size(), options, line_length);
+    return detail::with_char_input(input, [&](const char *in) {
+      return detail::with_char_output(
+          binary_output,
+          [&](char *out) {
+            return scalar::base64::tail_encode_base64_impl<true>(
+                out, in, input.size(), options, line_length);
+          },
+          [](std::size_t n) { return n; });
+    });
   } else
     #endif
   {
@@ -4660,15 +5193,180 @@ base64_to_binary(
     last_chunk_handling_options last_chunk_options = loose) noexcept {
     #if SIMDUTF_CPLUSPLUS23
   if consteval {
-    return scalar::base64::base64_to_binary_details_impl(
-        input.data(), input.size(), binary_output.data(), options,
-        last_chunk_options);
+    return detail::with_char_output(
+        binary_output,
+        [&](auto out) {
+          return scalar::base64::base64_to_binary_details_impl(
+              input.data(), input.size(), out, options, last_chunk_options);
+        },
+        [](const full_result &r) { return r.output_count; });
   } else
     #endif
   {
     return base64_to_binary(input.data(), input.size(),
                             reinterpret_cast<char *>(binary_output.data()),
                             options, last_chunk_options);
+  }
+}
+  #endif // SIMDUTF_SPAN
+
+/**
+ * Convert a base64 input to a binary output while returning more details
+ * than base64_to_binary.
+ *
+ * This function follows the WHATWG forgiving-base64 format, which means that it
+ * will ignore any ASCII spaces in the input. You may provide a padded input
+ * (with one or two equal signs at the end) or an unpadded input (without any
+ * equal signs at the end).
+ *
+ * See https://infra.spec.whatwg.org/#forgiving-base64-decode
+ *
+ * Unlike base64_to_binary, this function returns a full_result with both
+ * input_count and output_count, so you always know how much input was consumed
+ * and how much output was written. There are three cases where the input may
+ * not be fully consumed:
+ *
+ * 1. stop_before_partial: When last_chunk_options is set to
+ *    stop_before_partial, any incomplete 4-character group at the end of the
+ *    input is left unconsumed. This is useful for streaming/chunked decoding
+ *    where you can carry over the unconsumed input to the next chunk.
+ *
+ * 2. INVALID_BASE64_CHARACTER: The input contains a character that is not a
+ *    valid base64 character. In this case, input_count indicates where the
+ *    invalid character was found.
+ *
+ * 3. BASE64_INPUT_REMAINDER: When last_chunk_options is loose, the input
+ *    contains a number of base64 characters that, when divided by 4, leaves
+ *    a single remainder character (which cannot encode any bytes).
+ *
+ * You should call this function with a buffer that is at least
+ * maximal_binary_length_from_base64(input, length) bytes long. If you fail to
+ * provide that much space, the function may cause a buffer overflow.
+ *
+ * @param input         the base64 string to process
+ * @param length        the length of the string in bytes
+ * @param output        the pointer to a buffer that can hold the conversion
+ * result (should be at least maximal_binary_length_from_base64(input, length)
+ * bytes long).
+ * @param options       the base64 options to use, can be base64_default or
+ * base64_url, is base64_default by default.
+ * @param last_chunk_options the last chunk handling options,
+ * last_chunk_handling_options::loose by default
+ * but can also be last_chunk_handling_options::strict or
+ * last_chunk_handling_options::stop_before_partial.
+ * @return a full_result struct (of type simdutf::full_result containing the
+ * three fields error, input_count and output_count).
+ */
+simdutf_warn_unused full_result
+base64_to_binary_details(const char *input, size_t length, char *output,
+                         base64_options options = base64_default,
+                         last_chunk_handling_options last_chunk_options =
+                             last_chunk_handling_options::loose) noexcept;
+  #if SIMDUTF_SPAN
+simdutf_really_inline simdutf_warn_unused simdutf_constexpr23 full_result
+base64_to_binary_details(
+    const detail::input_span_of_byte_like auto &input,
+    detail::output_span_of_byte_like auto &&binary_output,
+    base64_options options = base64_default,
+    last_chunk_handling_options last_chunk_options = loose) noexcept {
+    #if SIMDUTF_CPLUSPLUS23
+  if consteval {
+    return detail::with_char_input(input, [&](auto in) {
+      return detail::with_char_output(
+          binary_output,
+          [&](char *out) {
+            return scalar::base64::base64_to_binary_details_impl(
+                in, input.size(), out, options, last_chunk_options);
+          },
+          [](const full_result &r) { return r.output_count; });
+    });
+  } else
+    #endif
+  {
+    return base64_to_binary_details(
+        reinterpret_cast<const char *>(input.data()), input.size(),
+        reinterpret_cast<char *>(binary_output.data()), options,
+        last_chunk_options);
+  }
+}
+  #endif // SIMDUTF_SPAN
+
+/**
+ * Convert a base64 input to a binary output while returning more details
+ * than base64_to_binary.
+ *
+ * This function follows the WHATWG forgiving-base64 format, which means that it
+ * will ignore any ASCII spaces in the input. You may provide a padded input
+ * (with one or two equal signs at the end) or an unpadded input (without any
+ * equal signs at the end).
+ *
+ * See https://infra.spec.whatwg.org/#forgiving-base64-decode
+ *
+ * Unlike base64_to_binary, this function returns a full_result with both
+ * input_count and output_count, so you always know how much input was consumed
+ * and how much output was written. There are three cases where the input may
+ * not be fully consumed:
+ *
+ * 1. stop_before_partial: When last_chunk_options is set to
+ *    stop_before_partial, any incomplete 4-character group at the end of the
+ *    input is left unconsumed. This is useful for streaming/chunked decoding
+ *    where you can carry over the unconsumed input to the next chunk.
+ *
+ * 2. INVALID_BASE64_CHARACTER: The input contains a character that is not a
+ *    valid base64 character. In this case, input_count indicates where the
+ *    invalid character was found.
+ *
+ * 3. BASE64_INPUT_REMAINDER: When last_chunk_options is loose, the input
+ *    contains a number of base64 characters that, when divided by 4, leaves
+ *    a single remainder character (which cannot encode any bytes).
+ *
+ * You should call this function with a buffer that is at least
+ * maximal_binary_length_from_base64(input, length) bytes long. If you fail to
+ * provide that much space, the function may cause a buffer overflow.
+ *
+ * @param input         the base64 string to process, in ASCII stored as 16-bit
+ * units
+ * @param length        the length of the string in 16-bit units
+ * @param output        the pointer to a buffer that can hold the conversion
+ * result (should be at least maximal_binary_length_from_base64(input, length)
+ * bytes long).
+ * @param options       the base64 options to use, can be base64_default or
+ * base64_url, is base64_default by default.
+ * @param last_chunk_options the last chunk handling options,
+ * last_chunk_handling_options::loose by default
+ * but can also be last_chunk_handling_options::strict or
+ * last_chunk_handling_options::stop_before_partial.
+ * @return a full_result struct (of type simdutf::full_result containing the
+ * three fields error, input_count and output_count).
+ */
+simdutf_warn_unused full_result
+base64_to_binary_details(const char16_t *input, size_t length, char *output,
+                         base64_options options = base64_default,
+                         last_chunk_handling_options last_chunk_options =
+                             last_chunk_handling_options::loose) noexcept;
+  #if SIMDUTF_SPAN
+simdutf_really_inline simdutf_warn_unused simdutf_constexpr23 full_result
+base64_to_binary_details(
+    std::span<const char16_t> input,
+    detail::output_span_of_byte_like auto &&binary_output,
+    base64_options options = base64_default,
+    last_chunk_handling_options last_chunk_options = loose) noexcept {
+    #if SIMDUTF_CPLUSPLUS23
+  if consteval {
+    return detail::with_char_output(
+        binary_output,
+        [&](auto out) {
+          return scalar::base64::base64_to_binary_details_impl(
+              input.data(), input.size(), out, options, last_chunk_options);
+        },
+        [](const full_result &r) { return r.output_count; });
+  } else
+    #endif
+  {
+    return base64_to_binary_details(
+        input.data(), input.size(),
+        reinterpret_cast<char *>(binary_output.data()), options,
+        last_chunk_options);
   }
 }
   #endif // SIMDUTF_SPAN
@@ -4777,6 +5475,10 @@ base64_valid_or_padding(char16_t input,
  * as well as a stop_before_partial approach, as per the following proposal:
  *
  * https://tc39.es/proposal-arraybuffer-base64/spec/#sec-frombase64
+ *
+ * The base64_to_binary_safe function has negligible overhead compared with
+ * base64_to_binary in the absence of ignorable characters; however, on short
+ * inputs containing ignorable characters, it can be up to three times slower.
  *
  * @param input         the base64 string to process, in ASCII stored as 8-bit
  * or 16-bit units
@@ -4928,7 +5630,7 @@ public:
    *
    * @return the name of the implementation, e.g. "haswell", "westmere", "arm64"
    */
-  virtual std::string name() const { return std::string(_name); }
+  virtual std::string_view name() const noexcept { return _name; }
 
   /**
    * The description of this implementation.
@@ -4939,7 +5641,7 @@ public:
    *
    * @return the name of the implementation, e.g. "haswell", "westmere", "arm64"
    */
-  virtual std::string description() const { return std::string(_description); }
+  virtual std::string_view description() const noexcept { return _description; }
 
   /**
    * The instruction sets this implementation is compiled against
@@ -5012,6 +5714,21 @@ public:
    */
   simdutf_warn_unused virtual result
   validate_utf8_with_errors(const char *buf, size_t len) const noexcept = 0;
+  /**
+   * Finds the pointer to the first byte of invalid utf8 while counting
+   continuation bytes and four-byte sequences.
+
+   * @param buf the UTF-8 string to validate.
+   * @param len the length of the string in bytes.
+   * @return a utf8_result struct. It contains the length of the valid utf8
+   segment, the error code and the count of continuation bytes and four-byte
+   sequences.
+   *
+   * Returns a utf8_result
+   */
+  virtual simdutf_warn_unused utf8_result
+  validate_utf8_with_counts(const char *buf, size_t len) const noexcept = 0;
+
 #endif // SIMDUTF_FEATURE_UTF8
 
 #if SIMDUTF_FEATURE_ASCII
@@ -5242,7 +5959,7 @@ public:
    *
    * @param input         the Latin1  string to convert
    * @param length        the length of the string in bytes
-   * @param utf16_buffer  the pointer to buffer that can hold conversion result
+   * @param utf16_output  the pointer to buffer that can hold conversion result
    * @return the number of written char16_t; 0 if conversion is not possible
    */
   simdutf_warn_unused virtual size_t
@@ -5256,7 +5973,7 @@ public:
    *
    * @param input         the Latin1 string to convert
    * @param length        the length of the string in bytes
-   * @param utf16_buffer  the pointer to buffer that can hold conversion result
+   * @param utf16_output  the pointer to buffer that can hold conversion result
    * @return the number of written char16_t; 0 if conversion is not possible
    */
   simdutf_warn_unused virtual size_t
@@ -5350,7 +6067,7 @@ public:
    *
    * @param input         the UTF-8 string to convert
    * @param length        the length of the string in bytes
-   * @param utf16_buffer  the pointer to buffer that can hold conversion result
+   * @param utf16_output  the pointer to buffer that can hold conversion result
    * @return the number of written char16_t; 0 if the input was not valid UTF-8
    * string
    */
@@ -5366,7 +6083,7 @@ public:
    *
    * @param input         the UTF-8 string to convert
    * @param length        the length of the string in bytes
-   * @param utf16_buffer  the pointer to buffer that can hold conversion result
+   * @param utf16_output  the pointer to buffer that can hold conversion result
    * @return the number of written char16_t; 0 if the input was not valid UTF-8
    * string
    */
@@ -5383,7 +6100,7 @@ public:
    *
    * @param input         the UTF-8 string to convert
    * @param length        the length of the string in bytes
-   * @param utf16_buffer  the pointer to buffer that can hold conversion result
+   * @param utf16_output  the pointer to buffer that can hold conversion result
    * @return a result pair struct (of type simdutf::result containing the two
    * fields error and count) with an error code and either position of the error
    * (in the input in code units) if any, or the number of code units validated
@@ -5402,7 +6119,7 @@ public:
    *
    * @param input         the UTF-8 string to convert
    * @param length        the length of the string in bytes
-   * @param utf16_buffer  the pointer to buffer that can hold conversion result
+   * @param utf16_output  the pointer to buffer that can hold conversion result
    * @return a result pair struct (of type simdutf::result containing the two
    * fields error and count) with an error code and either position of the error
    * (in the input in code units) if any, or the number of code units validated
@@ -5466,7 +6183,7 @@ public:
    *
    * @param input         the UTF-8 string to convert
    * @param length        the length of the string in bytes
-   * @param utf32_buffer  the pointer to buffer that can hold conversion result
+   * @param utf32_output  the pointer to buffer that can hold conversion result
    * @return the number of written char16_t; 0 if the input was not valid UTF-8
    * string
    */
@@ -5482,7 +6199,7 @@ public:
    *
    * @param input         the UTF-8 string to convert
    * @param length        the length of the string in bytes
-   * @param utf32_buffer  the pointer to buffer that can hold conversion result
+   * @param utf32_output  the pointer to buffer that can hold conversion result
    * @return a result pair struct (of type simdutf::result containing the two
    * fields error and count) with an error code and either position of the error
    * (in the input in code units) if any, or the number of char32_t written if
@@ -5531,7 +6248,7 @@ public:
    *
    * @param input         the UTF-8 string to convert
    * @param length        the length of the string in bytes
-   * @param utf16_buffer  the pointer to buffer that can hold conversion result
+   * @param utf32_buffer  the pointer to buffer that can hold conversion result
    * @return the number of written char32_t
    */
   simdutf_warn_unused virtual size_t
@@ -6164,7 +6881,6 @@ public:
    * format.
    *
    *
-   * @param input         the UTF-16 string to convert
    * @param length        the length of the string in 2-byte code units
    * (char16_t)
    * @return the number of bytes required to encode the UTF-16 string as Latin1
@@ -6389,7 +7105,6 @@ public:
    *
    * This function is not BOM-aware.
    *
-   * @param input         the UTF-16LE string to convert
    * @param length        the length of the string in 2-byte code units
    * (char16_t)
    * @return the number of bytes required to encode the UTF-16LE string as
@@ -6626,6 +7341,7 @@ public:
    * bytes long).
    * @param options       the base64 options to use, can be base64_default or
    * base64_url, is base64_default by default.
+   * @param last_chunk_options the handling of the last chunk (default: loose)
    * @return a result pair struct (of type simdutf::result containing the two
    * fields error and count) with an error code and either position of the error
    * (in the input in bytes) if any, or the number of bytes written if
@@ -6665,6 +7381,7 @@ public:
    * bytes long).
    * @param options       the base64 options to use, can be base64_default or
    * base64_url, is base64_default by default.
+   * @param last_chunk_options the handling of the last chunk (default: loose)
    * @return a full_result pair struct (of type simdutf::result containing the
    * three fields error, input_count and output_count).
    */
@@ -6702,6 +7419,7 @@ public:
    * bytes long).
    * @param options       the base64 options to use, can be base64_default or
    * base64_url, is base64_default by default.
+   * @param last_chunk_options the handling of the last chunk (default: loose)
    * @return a result pair struct (of type simdutf::result containing the two
    * fields error and count) with an error code and position of the
    * INVALID_BASE64_CHARACTER error (in the input in units) if any, or the
@@ -6741,6 +7459,7 @@ public:
    * bytes long).
    * @param options       the base64 options to use, can be base64_default or
    * base64_url, is base64_default by default.
+   * @param last_chunk_options the handling of the last chunk (default: loose)
    * @return a full_result pair struct (of type simdutf::result containing the
    * three fields error, input_count and output_count).
    */
@@ -6843,7 +7562,7 @@ public:
 
   struct TestProcedure {
     // display name
-    std::string name;
+    std::string_view name;
 
     // procedure should return whether given test pass or not
     void (*procedure)(const implementation &);
@@ -6854,7 +7573,12 @@ public:
 
 protected:
   /** @private Construct an implementation with the given name and description.
-   * For subclasses. */
+   * For subclasses.
+   * @param name the name of this implementation
+   * @param description a description of this implementation
+   * @param required_instruction_sets the instruction sets this implementation
+   * requires
+   */
   simdutf_really_inline implementation(const char *name,
                                        const char *description,
                                        uint32_t required_instruction_sets)
@@ -6911,7 +7635,7 @@ public:
    * @param name the implementation to find, e.g. "westmere", "haswell", "arm64"
    * @return the implementation, or nullptr if the parse failed.
    */
-  const implementation *operator[](const std::string &name) const noexcept {
+  const implementation *operator[](std::string_view name) const noexcept {
     for (const implementation *impl : *this) {
       if (impl->name() == name) {
         return impl;
@@ -7018,17 +7742,16 @@ simdutf_really_inline
   size_t outlen = binary_output.size();
     #if SIMDUTF_CPLUSPLUS23
   if consteval {
-    using CInput = std::decay_t<decltype(*input.data())>;
-    static_assert(std::is_same_v<CInput, char>,
-                  "sorry, the constexpr implementation is for now limited to "
-                  "input of type char");
-    using COutput = std::decay_t<decltype(*binary_output.data())>;
-    static_assert(std::is_same_v<COutput, char>,
-                  "sorry, the constexpr implementation is for now limited to "
-                  "output of type char");
-    auto r = base64_to_binary_safe_impl(
-        input.data(), input.size(), binary_output.data(), outlen, options,
-        last_chunk_options, decode_up_to_bad_char);
+    auto r = detail::with_char_input(input, [&](auto in) {
+      return detail::with_char_output(
+          binary_output,
+          [&](char *out) {
+            return base64_to_binary_safe_impl(in, input.size(), out, outlen,
+                                              options, last_chunk_options,
+                                              decode_up_to_bad_char);
+          },
+          [&](const auto &) { return outlen; });
+    });
     return {r, outlen};
   } else
     #endif
@@ -7057,9 +7780,14 @@ simdutf_really_inline
   size_t outlen = binary_output.size();
       #if SIMDUTF_CPLUSPLUS23
   if consteval {
-    auto r = base64_to_binary_safe_impl(
-        input.data(), input.size(), binary_output.data(), outlen, options,
-        last_chunk_options, decode_up_to_bad_char);
+    auto r = detail::with_char_output(
+        binary_output,
+        [&](auto out) {
+          return base64_to_binary_safe_impl(input.data(), input.size(), out,
+                                            outlen, options, last_chunk_options,
+                                            decode_up_to_bad_char);
+        },
+        [&](const auto &) { return outlen; });
     return {r, outlen};
   } else
       #endif
@@ -7077,5 +7805,78 @@ simdutf_really_inline
 } // namespace simdutf
 
 #endif // SIMDUTF_FEATURE_BASE64
+
+#if SIMDUTF_CPLUSPLUS23 && SIMDUTF_FEATURE_BASE64
+
+namespace simdutf {
+namespace literals {
+
+namespace detail {
+
+// the detail namespace is not part of the public api
+
+template <std::size_t N> struct base64_literal_helper {
+  std::array<char, N - 1> storage{};
+  static constexpr std::size_t size() noexcept { return N - 1; }
+  consteval base64_literal_helper(const char (&str)[N]) {
+    for (std::size_t i = 0; i < size(); i++) {
+      storage[i] = str[i];
+    }
+  }
+};
+
+template <std::size_t InputLen> struct base64_decode_result {
+  static constexpr std::size_t max_out = (InputLen + 3) / 4 * 3;
+  std::array<char, max_out> buffer{};
+  std::size_t output_count{};
+};
+
+template <std::size_t InputLen>
+consteval auto base64_decode_literal(const char *str) {
+  base64_decode_result<InputLen> result{};
+  auto r = scalar::base64::base64_to_binary_details_impl(
+      str, InputLen, result.buffer.data(), base64_default, loose);
+  if (r.error != error_code::SUCCESS) {
+  #if __cpp_lib_unreachable >= 202202L
+    std::unreachable(); // invalid base64 input in _base64 literal
+  #else
+    // workaround for older stdlib
+    throw "invalid base64 input in _base64 literal";
+  #endif
+  }
+  result.output_count = r.output_count;
+  return result;
+}
+
+template <base64_literal_helper a> consteval auto base64_make_array() {
+  constexpr auto decoded = base64_decode_literal<a.size()>(a.storage.data());
+  std::array<char, decoded.output_count> ret{};
+  for (std::size_t i = 0; i < decoded.output_count; i++) {
+    ret[i] = decoded.buffer[i];
+  }
+  return ret;
+}
+
+} // namespace detail
+
+/**
+ * User-defined literal for compile-time base64 decoding.
+ *
+ * Usage:
+ *   using namespace simdutf::literals;
+ *   constexpr auto decoded = "SGVsbG8gV29ybGQh"_base64;
+ *   // decoded is a std::array<char, 12> containing "Hello World!"
+ *
+ * The input must be valid base64. Whitepace is allowed and ignored.
+ * A compilation error occurs if the input is invalid.
+ */
+template <detail::base64_literal_helper a> consteval auto operator""_base64() {
+  return detail::base64_make_array<a>();
+}
+
+} // namespace literals
+} // namespace simdutf
+
+#endif // SIMDUTF_CPLUSPLUS23 && SIMDUTF_FEATURE_BASE64
 
 #endif // SIMDUTF_IMPLEMENTATION_H

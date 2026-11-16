@@ -1,6 +1,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <array>
+#include <cstdlib>
+#include <algorithm>
+#include <vector>
 
 #include "helpers/common.h"
 #include "simdutf.h"
@@ -10,7 +13,17 @@ constexpr std::array options = {
     simdutf::base64_url,
     simdutf::base64_default_no_padding,
     simdutf::base64_url_with_padding,
+    simdutf::base64_default_or_url,
+    simdutf::base64_default_accept_garbage,
+    simdutf::base64_url_accept_garbage,
+    simdutf::base64_default_or_url_accept_garbage,
 };
+
+constexpr bool accepts_garbage(simdutf::base64_options option) {
+  return option == simdutf::base64_default_accept_garbage ||
+         option == simdutf::base64_url_accept_garbage ||
+         option == simdutf::base64_default_or_url_accept_garbage;
+}
 
 constexpr std::array last_chunk = {
     simdutf::last_chunk_handling_options::loose,
@@ -34,10 +47,37 @@ void decode(std::span<const FromChar> base64_, const auto selected_option,
     auto& r = results.emplace_back();
     r.maxbinarylength =
         impl->maximal_binary_length_from_base64(base64.data(), base64.size());
+    // binary_length_from_base64 is not compared across implementations: for
+    // invalid input the implementations may legitimately return different
+    // estimates, so keep it as a local rather than a field of decoderesult.
+    const std::size_t binarylength =
+        impl->binary_length_from_base64(base64.data(), base64.size());
+    // binary_length_from_base64 must never exceed the maximal upper bound.
+    if (binarylength > r.maxbinarylength) {
+      std::cerr << "binary_length_from_base64 (" << binarylength
+                << ") > maximal_binary_length_from_base64 ("
+                << r.maxbinarylength << ") for impl " << impl->name() << "\n";
+      std::abort();
+    }
     std::vector<char> output(r.maxbinarylength);
     r.convertresult =
         impl->base64_to_binary(base64.data(), base64.size(), output.data(),
                                selected_option, last_chunk_option);
+    // binary_length_from_base64 takes no last_chunk_handling option, so its
+    // estimate only equals the decoded size under loose handling. Under strict
+    // and stop_before_partial a partial final chunk is dropped, so a SUCCESS
+    // can legitimately write fewer bytes than the estimate (e.g. "QQQ" with
+    // stop_before_partial reports 2 but decodes 0). Only assert equality for
+    // loose to avoid false positives.
+    if (last_chunk_option == simdutf::last_chunk_handling_options::loose &&
+        !accepts_garbage(selected_option) &&
+        r.convertresult.error == simdutf::error_code::SUCCESS &&
+        binarylength != r.convertresult.count) {
+      std::cerr << "binary_length_from_base64 (" << binarylength
+                << ") != decoded count (" << r.convertresult.count
+                << ") for impl " << impl->name() << "\n";
+      std::abort();
+    }
   }
   auto neq = [](const auto& a, const auto& b) { return a != b; };
   if (std::ranges::adjacent_find(results, neq) != results.end()) {
@@ -97,7 +137,21 @@ void decode_safe(std::span<const FromChar> base64_, const auto selected_option,
     }
   } break;
   case simdutf::error_code::SUCCESS: {
-    // possibility to compare with the normal function
+    std::vector<char> expected(simdutf::maximal_binary_length_from_base64(
+        base64.data(), base64.size()));
+    const auto expectedresult =
+        simdutf::base64_to_binary(base64.data(), base64.size(), expected.data(),
+                                  selected_option, last_chunk_option);
+    if (expectedresult.error != simdutf::error_code::SUCCESS ||
+        expectedresult.count != outlen ||
+        !std::equal(output.begin(), output.begin() + outlen,
+                    expected.begin())) {
+      std::cerr << "base64_to_binary_safe disagrees with base64_to_binary: "
+                << "decode_buf_size=" << decode_buf_size << " outlen=" << outlen
+                << " safe result=" << convertresult
+                << " regular result=" << expectedresult << '\n';
+      std::abort();
+    }
   } break;
   default:;
   }
@@ -252,7 +306,12 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
   switch (action) {
   case 0: {
     const std::span<const char> chardata{(const char*)data, size};
-    roundtrip(chardata, selected_option, selected_last_chunk, line_length);
+    const auto encode_option =
+        (selected_option == simdutf::base64_default_or_url ||
+         accepts_garbage(selected_option))
+            ? simdutf::base64_default
+            : selected_option;
+    roundtrip(chardata, encode_option, selected_last_chunk, line_length);
   } break;
   case 1: {
     const std::span<const char> chardata{(const char*)data, size};

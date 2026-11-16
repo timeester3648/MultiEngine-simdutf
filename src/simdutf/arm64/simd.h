@@ -66,6 +66,19 @@ namespace {
 } // namespace
 #endif // SIMDUTF_REGULAR_VISUAL_STUDIO
 
+// Returns true if any lane of `mask` is non-zero.
+//
+// A 32-bit umaxv is used rather than vmaxvq_u8/u16, which is slower on some
+// cores. A floating-point compare against 0.0 is avoided because flush-to-zero
+// makes denormal bit patterns compare equal to zero.
+//
+// There is deliberately a single overload: Visual Studio defines every 128-bit
+// NEON type as the same union type, so overloading on uint8x16_t, uint16x8_t
+// and uint32x4_t does not compile there.
+simdutf_really_inline bool any_lane_set(const uint16x8_t mask) {
+  return vmaxvq_u32(vreinterpretq_u32_u16(mask)) != 0;
+}
+
 template <typename T> struct simd8;
 
 //
@@ -310,7 +323,7 @@ template <> struct simd8<int8_t> {
   //    ...
   template <endianness big_endian>
   simdutf_really_inline void store_ascii_as_utf16(char16_t *p) const {
-    simdutf_constexpr auto matches = match_system(big_endian);
+    constexpr auto matches = match_system(big_endian);
     const int8x16x2_t pair = matches
                                  ? int8x16x2_t{{this->value, vmovq_n_s8(0)}}
                                  : int8x16x2_t{{vmovq_n_s8(0), this->value}};

@@ -7,22 +7,30 @@
  * out.
  * Returns the position of the input and output after the processing is
  * completed. Upon error, the output is set to null.
+ *
+ * With validate = false, the input must be valid UTF-8: the checks are compiled
+ * out. We still stop (and return a null output) if a block makes no progress,
+ * which only invalid input can cause, so that misuse cannot loop forever.
  */
 
-template <endianness big_endian>
+template <endianness big_endian, bool validate = true>
 utf8_to_utf16_result
 fast_avx512_convert_utf8_to_utf16(const char *in, size_t len, char16_t *out) {
   const char *const final_in = in + len;
   bool result = true;
   while (result) {
+    const char *const start = in;
     if (final_in - in >= 64) {
-      result = process_block_utf8_to_utf16<SIMDUTF_FULL, big_endian>(
+      result = process_block_utf8_to_utf16<SIMDUTF_FULL, big_endian, validate>(
           in, out, final_in - in);
     } else if (in < final_in) {
-      result = process_block_utf8_to_utf16<SIMDUTF_TAIL, big_endian>(
+      result = process_block_utf8_to_utf16<SIMDUTF_TAIL, big_endian, validate>(
           in, out, final_in - in);
     } else {
       break;
+    }
+    if (!validate && in == start) {
+      result = false;
     }
   }
   if (!result) {
@@ -61,6 +69,7 @@ simdutf::result fast_avx512_convert_utf8_to_utf16_with_errors(const char *in,
         return {simdutf::TOO_LONG, pos};
       }
     }
+    SIMDUTF_VZEROUPPER();
     // rewind_and_convert_with_errors will seek a potential error from in
     // onward, with the ability to go back up to in - init_in bytes, and read
     // final_in - in bytes forward.

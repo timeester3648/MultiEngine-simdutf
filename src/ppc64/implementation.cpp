@@ -37,9 +37,13 @@ enum class ErrorReporting {
   none,       // no error checking is done, we assume valid inputs
 };
 
-#if SIMDUTF_FEATURE_UTF16
+#if SIMDUTF_FEATURE_UTF16 || SIMDUTF_FEATURE_DETECT_ENCODING
   #include "ppc64/ppc64_validate_utf16.cpp"
-#endif // SIMDUTF_FEATURE_UTF16
+#endif // SIMDUTF_FEATURE_UTF16 || SIMDUTF_FEATURE_DETECT_ENCODING
+
+#if SIMDUTF_FEATURE_UTF8 || SIMDUTF_FEATURE_UTF32
+  #include "ppc64/ppc64_write_to_utf8.cpp"
+#endif // SIMDUTF_FEATURE_UTF8 || SIMDUTF_FEATURE_UTF32
 
 #if SIMDUTF_FEATURE_LATIN1 && SIMDUTF_FEATURE_UTF8
   #include "ppc64/ppc64_convert_latin1_to_utf8.cpp"
@@ -69,9 +73,10 @@ enum class ErrorReporting {
   #include "ppc64/ppc64_convert_utf16_to_latin1.cpp"
 #endif // SIMDUTF_FEATURE_UTF16 && SIMDUTF_FEATURE_LATIN1
 
-#if SIMDUTF_FEATURE_UTF16 && SIMDUTF_FEATURE_UTF8
+#if (SIMDUTF_FEATURE_UTF16 || SIMDUTF_FEATURE_UTF32) && SIMDUTF_FEATURE_UTF8
   #include "ppc64/ppc64_convert_utf16_to_utf8.cpp"
-#endif // SIMDUTF_FEATURE_UTF16 && SIMDUTF_FEATURE_UTF8
+#endif // (SIMDUTF_FEATURE_UTF16 || SIMDUTF_FEATURE_UTF32) &&
+       // SIMDUTF_FEATURE_UTF8
 
 #if SIMDUTF_FEATURE_UTF16 && SIMDUTF_FEATURE_UTF32
   #include "ppc64/ppc64_convert_utf16_to_utf32.cpp"
@@ -85,9 +90,9 @@ enum class ErrorReporting {
   #include "ppc64/ppc64_convert_utf32_to_utf16.cpp"
 #endif // SIMDUTF_FEATURE_UTF32 && SIMDUTF_FEATURE_UTF16
 
-#if SIMDUTF_FEATURE_UTF32 && SIMDUTF_FEATURE_UTF32
+#if SIMDUTF_FEATURE_UTF32 && SIMDUTF_FEATURE_UTF8
   #include "ppc64/ppc64_convert_utf32_to_utf8.cpp"
-#endif // SIMDUTF_FEATURE_UTF32 && SIMDUTF_FEATURE_UTF32
+#endif // SIMDUTF_FEATURE_UTF32 && SIMDUTF_FEATURE_UTF8
 
 #if SIMDUTF_FEATURE_UTF8 && SIMDUTF_FEATURE_LATIN1
   #include "ppc64/ppc64_utf8_length_from_latin1.cpp"
@@ -101,15 +106,20 @@ enum class ErrorReporting {
 } // namespace SIMDUTF_IMPLEMENTATION
 } // namespace simdutf
 
-#if SIMDUTF_FEATURE_UTF8
+#if SIMDUTF_FEATURE_UTF8 || SIMDUTF_FEATURE_ASCII ||                           \
+    SIMDUTF_FEATURE_DETECT_ENCODING
   #include "generic/buf_block_reader.h"
+#endif // SIMDUTF_FEATURE_UTF8 || SIMDUTF_FEATURE_ASCII ||
+       // SIMDUTF_FEATURE_DETECT_ENCODING
+#if SIMDUTF_FEATURE_UTF8 || SIMDUTF_FEATURE_DETECT_ENCODING
   #include "generic/utf8_validation/utf8_lookup4_algorithm.h"
   #include "generic/utf8_validation/utf8_validator.h"
-#endif // SIMDUTF_FEATURE_UTF8
+#endif // SIMDUTF_FEATURE_UTF8 || SIMDUTF_FEATURE_DETECT_ENCODING
 
 #if SIMDUTF_FEATURE_UTF8 && SIMDUTF_FEATURE_UTF16
   #include "generic/utf8_to_utf16/utf8_to_utf16.h"
   #include "generic/utf8_to_utf16/valid_utf8_to_utf16.h"
+  #include "generic/utf16_to_utf8/utf16_to_utf8_with_replacement.h"
 #endif // SIMDUTF_FEATURE_UTF8 && SIMDUTF_FEATURE_UTF16
 
 #if SIMDUTF_FEATURE_UTF8 && SIMDUTF_FEATURE_UTF32
@@ -117,19 +127,19 @@ enum class ErrorReporting {
   #include "generic/utf8_to_utf32/valid_utf8_to_utf32.h"
 #endif // SIMDUTF_FEATURE_UTF8 && SIMDUTF_FEATURE_UTF32
 
-#if SIMDUTF_FEATURE_UTF8
+#if SIMDUTF_FEATURE_UTF8 || SIMDUTF_FEATURE_DETECT_ENCODING
   #include "generic/utf8.h"
-#endif // SIMDUTF_FEATURE_UTF8
+#endif // SIMDUTF_FEATURE_UTF8 || SIMDUTF_FEATURE_DETECT_ENCODING
 
-#if SIMDUTF_FEATURE_UTF16
+#if SIMDUTF_FEATURE_UTF16 || SIMDUTF_FEATURE_DETECT_ENCODING
   #include "generic/utf16.h"
   #include "generic/validate_utf16.h"
-#endif // SIMDUTF_FEATURE_UTF16
+#endif // SIMDUTF_FEATURE_UTF16 || SIMDUTF_FEATURE_DETECT_ENCODING
 
-#if SIMDUTF_FEATURE_UTF32
+#if SIMDUTF_FEATURE_UTF32 || SIMDUTF_FEATURE_DETECT_ENCODING
   #include "generic/utf32.h"
   #include "generic/validate_utf32.h"
-#endif // SIMDUTF_FEATURE_UTF32
+#endif // SIMDUTF_FEATURE_UTF32 || SIMDUTF_FEATURE_DETECT_ENCODING
 
 #if SIMDUTF_FEATURE_ASCII
   #include "generic/ascii_validation.h"
@@ -516,22 +526,33 @@ simdutf_warn_unused size_t implementation::convert_utf16be_to_utf8(
       buf, len, utf8_output);
 }
 
+template <endianness big_endian>
+simdutf_really_inline full_result convert_utf16_to_utf8_with_details(
+    const char16_t *buf, size_t len, char *utf8_output) {
+  const auto vr =
+      ppc64_convert_utf16_to_utf8<big_endian>(buf, len, utf8_output);
+  const size_t consumed = size_t(vr.input - buf);
+  const size_t written = size_t(vr.output - utf8_output);
+  if (vr.err != error_code::SUCCESS) {
+    return full_result(vr.err, consumed, written);
+  }
+  full_result sr =
+      scalar::utf16_to_utf8::convert_with_errors<big_endian, false>(
+          vr.input, len - consumed, vr.output, 0);
+  return full_result(sr.error, consumed + sr.input_count,
+                     written + sr.output_count);
+}
+
 simdutf_warn_unused result implementation::convert_utf16le_to_utf8_with_errors(
     const char16_t *buf, size_t len, char *utf8_output) const noexcept {
-
-  return convert_with_errors_impl(
-      ppc64_convert_utf16_to_utf8<endianness::LITTLE>,
-      scalar::utf16_to_utf8::simple_convert_with_errors<endianness::LITTLE>,
-      buf, len, utf8_output);
+  return convert_utf16_to_utf8_with_details<endianness::LITTLE>(buf, len,
+                                                                utf8_output);
 }
 
 simdutf_warn_unused result implementation::convert_utf16be_to_utf8_with_errors(
     const char16_t *buf, size_t len, char *utf8_output) const noexcept {
-
-  return convert_with_errors_impl(
-      ppc64_convert_utf16_to_utf8<endianness::BIG>,
-      scalar::utf16_to_utf8::simple_convert_with_errors<endianness::BIG>, buf,
-      len, utf8_output);
+  return convert_utf16_to_utf8_with_details<endianness::BIG>(buf, len,
+                                                             utf8_output);
 }
 
 simdutf_warn_unused size_t implementation::convert_valid_utf16le_to_utf8(
@@ -709,6 +730,11 @@ simdutf_warn_unused size_t
 implementation::count_utf8(const char *input, size_t length) const noexcept {
   return utf8::count_code_points(input, length);
 }
+simdutf_warn_unused utf8_result implementation::validate_utf8_with_counts(
+    const char *buf, size_t len) const noexcept {
+  return ppc64::utf8_validation::generic_validate_utf8_with_counts(buf, len);
+}
+
 #endif // SIMDUTF_FEATURE_UTF8
 
 #if SIMDUTF_FEATURE_UTF8 && SIMDUTF_FEATURE_LATIN1
@@ -780,14 +806,20 @@ implementation::utf8_length_from_utf16be_with_replacement(
 simdutf_warn_unused size_t
 implementation::convert_utf16le_to_utf8_with_replacement(
     const char16_t *input, size_t length, char *utf8_buffer) const noexcept {
-  return scalar::utf16_to_utf8::convert_with_replacement<endianness::LITTLE>(
+  return utf16_to_utf8::convert_with_replacement_via(
+      [](const char16_t *b, size_t l, char *o) {
+        return convert_utf16_to_utf8_with_details<endianness::LITTLE>(b, l, o);
+      },
       input, length, utf8_buffer);
 }
 
 simdutf_warn_unused size_t
 implementation::convert_utf16be_to_utf8_with_replacement(
     const char16_t *input, size_t length, char *utf8_buffer) const noexcept {
-  return scalar::utf16_to_utf8::convert_with_replacement<endianness::BIG>(
+  return utf16_to_utf8::convert_with_replacement_via(
+      [](const char16_t *b, size_t l, char *o) {
+        return convert_utf16_to_utf8_with_details<endianness::BIG>(b, l, o);
+      },
       input, length, utf8_buffer);
 }
 

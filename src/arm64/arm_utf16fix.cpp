@@ -1,15 +1,9 @@
 
 /*
- * Returns if a vector of type uint8x16_t is all zero.
+ * Returns whether a vector of type uint8x16_t is not all zero.
  */
-simdutf_really_inline int veq_non_zero(uint8x16_t v) {
-  // might compile to two instructions:
-  //	umaxv   s0, v0.4s
-  //	fmov	w0, s0
-  // On Apple hardware, they both have a latency of 3 cycles, with a throughput
-  // of four instructions per cycle. So that's 6 cycles of latency (!!!) for the
-  // two instructions. A narrowing shift has the same latency and throughput.
-  return vmaxvq_u32(vreinterpretq_u32_u8(v));
+simdutf_really_inline bool veq_non_zero(uint8x16_t v) {
+  return any_lane_set(vreinterpretq_u16_u8(v));
 }
 
 /*
@@ -54,7 +48,7 @@ void utf16fix_block(char16_t *out, const char16_t *in) {
     out[-1] = ill ? replacement : lbc;
 
     /* fix illegal sequencing in the main block */
-    if simdutf_constexpr (!match_system(big_endian)) {
+    if constexpr (!match_system(big_endian)) {
       block.val[1] = vbslq_u8(block_illseq, vdupq_n_u8(0xfd), block.val[1]);
       block.val[0] = vorrq_u8(block_illseq, block.val[0]);
     } else {

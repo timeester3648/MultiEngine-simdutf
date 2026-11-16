@@ -3,8 +3,9 @@ namespace SIMDUTF_IMPLEMENTATION {
 namespace {
 namespace base64_lengths {
 
-simdutf_warn_unused size_t binary_length_from_base64(const char *input,
-                                                     size_t length) {
+// westmere has its own version of this overload.
+simdutf_unused simdutf_warn_unused size_t
+binary_length_from_base64(const char *input, size_t length) {
   size_t pos = 0;
   size_t count = 0;
   for (; pos + 64 <= length; pos += 64) {
@@ -39,6 +40,9 @@ simdutf_warn_unused size_t binary_length_from_base64(const char16_t *input,
     uint64_t maybe_base64 = block.gteq(33); // >= 33 which is '!' in ASCII
     count += count_ones(maybe_base64);
   }
+  // simd16x32::to_bitmask sets two bits per matching 16-bit lane, so the
+  // vectorized loop counted each unit twice.
+  count /= 2;
   while (pos < length) {
     count += (input[pos] > 0x20) ? 1 : 0;
     pos++;

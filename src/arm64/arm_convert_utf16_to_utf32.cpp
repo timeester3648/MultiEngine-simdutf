@@ -62,7 +62,7 @@ arm_convert_utf16_to_utf32(const char16_t *buf, size_t len,
 
   while (end - buf >= 8) {
     uint16x8_t in = vld1q_u16(reinterpret_cast<const uint16_t *>(buf));
-    if simdutf_constexpr (!match_system(big_endian)) {
+    if constexpr (!match_system(big_endian)) {
       in = vreinterpretq_u16_u8(vrev16q_u8(vreinterpretq_u8_u16(in)));
     }
 
@@ -70,7 +70,7 @@ arm_convert_utf16_to_utf32(const char16_t *buf, size_t len,
         vceqq_u16(vandq_u16(in, v_f800), v_d800);
     // It might seem like checking for surrogates_bitmask == 0xc000 could help.
     // However, it is likely an uncommon occurrence.
-    if (vmaxvq_u16(surrogates_bytemask) == 0) {
+    if (!any_lane_set(surrogates_bytemask)) {
       // case: no surrogate pairs, extend all 16-bit code units to 32-bit code
       // units
       vst1q_u32(utf32_output, vmovl_u16(vget_low_u16(in)));
@@ -132,7 +132,7 @@ arm_convert_utf16_to_utf32_with_errors(const char16_t *buf, size_t len,
 
   while ((end - buf) >= 8) {
     uint16x8_t in = vld1q_u16(reinterpret_cast<const uint16_t *>(buf));
-    if simdutf_constexpr (!match_system(big_endian)) {
+    if constexpr (!match_system(big_endian)) {
       in = vreinterpretq_u16_u8(vrev16q_u8(vreinterpretq_u8_u16(in)));
     }
 
@@ -140,7 +140,7 @@ arm_convert_utf16_to_utf32_with_errors(const char16_t *buf, size_t len,
         vceqq_u16(vandq_u16(in, v_f800), v_d800);
     // It might seem like checking for surrogates_bitmask == 0xc000 could help.
     // However, it is likely an uncommon occurrence.
-    if (vmaxvq_u16(surrogates_bytemask) == 0) {
+    if (!any_lane_set(surrogates_bytemask)) {
       // case: no surrogate pairs, extend all 16-bit code units to 32-bit code
       // units
       vst1q_u32(utf32_output, vmovl_u16(vget_low_u16(in)));

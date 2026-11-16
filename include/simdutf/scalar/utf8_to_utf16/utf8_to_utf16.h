@@ -1,6 +1,8 @@
 #ifndef SIMDUTF_UTF8_TO_UTF16_H
 #define SIMDUTF_UTF8_TO_UTF16_H
 
+#include <cstring>
+
 namespace simdutf {
 namespace scalar {
 namespace {
@@ -59,10 +61,10 @@ simdutf_constexpr23 size_t convert(InputPtr data, size_t len,
       // range check
       uint32_t code_point =
           (leading_byte & 0b00011111) << 6 | (data[pos + 1] & 0b00111111);
-      if (code_point < 0x80 || 0x7ff < code_point) {
+      if (code_point < 0x80) {
         return 0;
       }
-      if simdutf_constexpr (!match_system(big_endian)) {
+      if constexpr (!match_system(big_endian)) {
         code_point = uint32_t(u16_swap_bytes(uint16_t(code_point)));
       }
       *utf16_output++ = char16_t(code_point);
@@ -84,11 +86,10 @@ simdutf_constexpr23 size_t convert(InputPtr data, size_t len,
       uint32_t code_point = (leading_byte & 0b00001111) << 12 |
                             (data[pos + 1] & 0b00111111) << 6 |
                             (data[pos + 2] & 0b00111111);
-      if (code_point < 0x800 || 0xffff < code_point ||
-          (0xd7ff < code_point && code_point < 0xe000)) {
+      if (code_point < 0x800 || (0xd7ff < code_point && code_point < 0xe000)) {
         return 0;
       }
-      if simdutf_constexpr (!match_system(big_endian)) {
+      if constexpr (!match_system(big_endian)) {
         code_point = uint32_t(u16_swap_bytes(uint16_t(code_point)));
       }
       *utf16_output++ = char16_t(code_point);
@@ -117,9 +118,12 @@ simdutf_constexpr23 size_t convert(InputPtr data, size_t len,
         return 0;
       }
       code_point -= 0x10000;
-      uint16_t high_surrogate = uint16_t(0xD800 + (code_point >> 10));
+      // The mask is a no-op (code_point < 0x100000). It stops clang 18's SLP
+      // vectorizer on RISC-V V from narrowing code_point to 16 bits before
+      // the shift, which drops bits 16-19 of the code point.
+      uint16_t high_surrogate = uint16_t(0xD800 + ((code_point >> 10) & 0x3FF));
       uint16_t low_surrogate = uint16_t(0xDC00 + (code_point & 0x3FF));
-      if simdutf_constexpr (!match_system(big_endian)) {
+      if constexpr (!match_system(big_endian)) {
         high_surrogate = u16_swap_bytes(high_surrogate);
         low_surrogate = u16_swap_bytes(low_surrogate);
       }
@@ -186,10 +190,10 @@ simdutf_constexpr23 result convert_with_errors(InputPtr data, size_t len,
       // range check
       uint32_t code_point = (leading_byte & 0b00011111) << 6 |
                             (uint8_t(data[pos + 1]) & 0b00111111);
-      if (code_point < 0x80 || 0x7ff < code_point) {
+      if (code_point < 0x80) {
         return result(error_code::OVERLONG, pos);
       }
-      if simdutf_constexpr (!match_system(big_endian)) {
+      if constexpr (!match_system(big_endian)) {
         code_point = uint32_t(u16_swap_bytes(uint16_t(code_point)));
       }
       *utf16_output++ = char16_t(code_point);
@@ -211,13 +215,13 @@ simdutf_constexpr23 result convert_with_errors(InputPtr data, size_t len,
       uint32_t code_point = (leading_byte & 0b00001111) << 12 |
                             (uint8_t(data[pos + 1]) & 0b00111111) << 6 |
                             (uint8_t(data[pos + 2]) & 0b00111111);
-      if ((code_point < 0x800) || (0xffff < code_point)) {
+      if (code_point < 0x800) {
         return result(error_code::OVERLONG, pos);
       }
       if (0xd7ff < code_point && code_point < 0xe000) {
         return result(error_code::SURROGATE, pos);
       }
-      if simdutf_constexpr (!match_system(big_endian)) {
+      if constexpr (!match_system(big_endian)) {
         code_point = uint32_t(u16_swap_bytes(uint16_t(code_point)));
       }
       *utf16_output++ = char16_t(code_point);
@@ -249,9 +253,12 @@ simdutf_constexpr23 result convert_with_errors(InputPtr data, size_t len,
         return result(error_code::TOO_LARGE, pos);
       }
       code_point -= 0x10000;
-      uint16_t high_surrogate = uint16_t(0xD800 + (code_point >> 10));
+      // The mask is a no-op (code_point < 0x100000). It stops clang 18's SLP
+      // vectorizer on RISC-V V from narrowing code_point to 16 bits before
+      // the shift, which drops bits 16-19 of the code point.
+      uint16_t high_surrogate = uint16_t(0xD800 + ((code_point >> 10) & 0x3FF));
       uint16_t low_surrogate = uint16_t(0xDC00 + (code_point & 0x3FF));
-      if simdutf_constexpr (!match_system(big_endian)) {
+      if constexpr (!match_system(big_endian)) {
         high_surrogate = u16_swap_bytes(high_surrogate);
         low_surrogate = u16_swap_bytes(low_surrogate);
       }

@@ -10,6 +10,12 @@ namespace {
 } // namespace SIMDUTF_IMPLEMENTATION
 } // namespace simdutf
 
+#if SIMDUTF_FEATURE_UTF8 && SIMDUTF_FEATURE_UTF16
+  // transcoding from UTF-16 to UTF-8 (self-wrapping generic header, must be
+  // included at namespace scope zero)
+  #include "generic/utf16_to_utf8/utf16_to_utf8_with_replacement.h"
+#endif // SIMDUTF_FEATURE_UTF8 && SIMDUTF_FEATURE_UTF16
+
 //
 // Implementation-specific overrides
 //
@@ -27,6 +33,7 @@ namespace SIMDUTF_IMPLEMENTATION {
 #include "rvv/rvv_utf8_to.inl.cpp"
 
 #if SIMDUTF_FEATURE_BASE64
+  #include "rvv/rvv_base64.cpp"
   #include "rvv/rvv_find.cpp"
 #endif // SIMDUTF_FEATURE_BASE64
 
@@ -91,14 +98,13 @@ simdutf_warn_unused full_result implementation::base64_to_binary_details(
 size_t implementation::binary_to_base64(const char *input, size_t length,
                                         char *output,
                                         base64_options options) const noexcept {
-  return scalar::base64::tail_encode_base64(output, input, length, options);
+  return encode_base64(output, input, length, options);
 }
 
 size_t implementation::binary_to_base64_with_lines(
     const char *input, size_t length, char *output, size_t line_length,
     base64_options options) const noexcept {
-  return scalar::base64::tail_encode_base64_impl<true>(output, input, length,
-                                                       options, line_length);
+  return encode_base64_rvv<true>(output, input, length, options, line_length);
 }
 #endif // SIMDUTF_FEATURE_BASE64
 #if SIMDUTF_FEATURE_UTF8 && SIMDUTF_FEATURE_UTF16
@@ -119,18 +125,35 @@ implementation::utf8_length_from_utf16be_with_replacement(
 simdutf_warn_unused size_t
 implementation::convert_utf16le_to_utf8_with_replacement(
     const char16_t *input, size_t length, char *utf8_buffer) const noexcept {
-  return scalar::utf16_to_utf8::convert_with_replacement<endianness::LITTLE>(
+  return utf16_to_utf8::convert_with_replacement_via(
+      [](const char16_t *b, size_t l, char *o) {
+        return rvv_utf16_to_utf8_with_details<simdutf_ByteFlip::NONE>(b, l, o);
+      },
       input, length, utf8_buffer);
 }
 
 simdutf_warn_unused size_t
 implementation::convert_utf16be_to_utf8_with_replacement(
     const char16_t *input, size_t length, char *utf8_buffer) const noexcept {
-  return scalar::utf16_to_utf8::convert_with_replacement<endianness::BIG>(
+  return utf16_to_utf8::convert_with_replacement_via(
+      [this](const char16_t *b, size_t l, char *o) {
+        return supports_zvbb()
+                   ? rvv_utf16_to_utf8_with_details<simdutf_ByteFlip::ZVBB>(
+                         b, l, o)
+                   : rvv_utf16_to_utf8_with_details<simdutf_ByteFlip::V>(b, l,
+                                                                         o);
+      },
       input, length, utf8_buffer);
 }
 
 #endif // SIMDUTF_FEATURE_UTF8 && SIMDUTF_FEATURE_UTF16
+
+#if SIMDUTF_FEATURE_UTF8
+simdutf_warn_unused utf8_result implementation::validate_utf8_with_counts(
+    const char *buf, size_t len) const noexcept {
+  return scalar::utf8::validate_with_counts(buf, len);
+}
+#endif // SIMDUTF_FEATURE_UTF8
 
 } // namespace SIMDUTF_IMPLEMENTATION
 } // namespace simdutf
